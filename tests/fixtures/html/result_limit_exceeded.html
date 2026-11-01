@@ -1,0 +1,930 @@
+
+
+
+
+<!DOCTYPE html>
+
+
+
+<html xmlns="http://www.w3.org/1999/xhtml" lang="zh-Hant">
+
+<head>
+
+<meta property="og:image" content="http://wwwq.moex.gov.tw/images/ShareLogo.png" />
+
+<meta property="og:title" content="考畢試題查詢平臺-考選部" />
+
+<meta property="og:description" content="考畢試題查詢平臺-考選部" /><meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+
+    <!-- The above 3 meta tags *must* come first in the head; any other head content must come *after* these tags -->
+
+    <meta http-equiv="X-UA-Compatible" content="IE=edge" /><meta name="viewport" content="width=device-width, initial-scale=1" /><title>
+
+	考畢試題查詢平臺-考選部
+
+</title><meta http-equiv="X-Frame-Options" content="deny" /> 
+
+    
+
+    <script type="text/javascript">
+
+        if (self == top) {
+
+            document.documentElement.style.display = 'block';
+
+        }
+
+        else { top.location = self.location; }
+
+    </script>
+
+        
+
+    <link href="/library/Bootstrap/reset.min.css" rel="stylesheet" type="text/css" /><link href="/library/Bootstrap/dist/css/bootstrap.min.css" rel="stylesheet" type="text/css" /><link href="/library/cssMoexWebRwd.min.css" rel="stylesheet" type="text/css" />
+
+        
+
+    
+
+    <script src="/library/Bootstrap/jquery-3.6.0.min.js" type="text/javascript"></script>
+
+
+
+    <script src="/library/Bootstrap/dist/js/bootstrap.min.js" type="text/javascript"></script>
+
+    
+
+    <script src="/library/jquery_dotdotdot.min.js" type="text/javascript"></script>
+
+        
+
+    <!-- IE10 viewport hack for Surface/desktop Windows 8 bug -->
+
+    <script src="/library/Bootstrap/ie10-viewport-bug-workaround.min.js" type="text/javascript"></script>
+
+    <script src="/library/jsMoexWeb.min.js" type="text/javascript"></script>
+
+    
+
+    <script type="text/javascript">
+
+        $(document).ready(function () {            
+
+            $('.cssTextOverflow').dotdotdot({ watch: 'window' });
+
+
+
+            // 把第一層的連結調整為可點選
+
+            $('.navbar-nav > li > a').click(function () {
+
+                //location.href = this.href;                
+
+                if (typeof ($(this).attr('target')) == "undefined") {
+
+                    location.href = this.href;
+
+                } else {
+
+                    window.open(this.href, $(this).attr('target')); 
+
+                }                
+
+            });
+
+            
+
+            //配合無障礙「定位點」在 Firefox 環境，看不出位置問題
+
+            //將直接執行內含的超連結，而自動轉至超連結指向的頁面，使定位點失去最重要的「定位」功效
+
+            //因此，停用 Firefox 時，定位點之 click 動作
+
+            if (navigator.userAgent.match("Firefox")) {
+
+                $('a[accesskey]').click(function () {
+
+                    return false;
+
+                });
+
+            };
+
+
+
+            $('a.font_size').on('click', function () {
+
+                OnClickChagneFontSize(this.id);
+
+                return false;
+
+            });
+
+
+
+            $('#gotocenter,.aPageTop').on('click', function () {
+
+                $("html, body").animate({ scrollTop: 0 }, "slow");
+
+            });
+
+        });
+
+        //快速鍵﹝Accesskey﹞Alt + C or Alt + L, 捲軸置頂 scrollTop = 0
+
+        $(document).keydown(function (e) {
+
+            if (e.altKey && (e.which == 67 || e.which == 76)) {
+
+                $("html, body").animate({ scrollTop: 0 }, "slow");
+
+            }
+
+        });
+
+    </script>
+
+
+
+    
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+
+    <!-- Google tag (gtag.js) -->
+
+    <script async src="https://www.googletagmanager.com/gtag/js?id=G-2F1G8SC6RK"></script>
+
+    <script>
+
+        window.dataLayer = window.dataLayer || [];
+
+        function gtag() { dataLayer.push(arguments); }
+
+        gtag('js', new Date());
+
+
+
+        gtag('config', 'G-2F1G8SC6RK');
+
+    </script>
+
+    <noscript>
+
+        <link href="/library/cssMoexNoscript.min.css" rel="stylesheet" type="text/css" />
+
+    </noscript>
+
+    
+
+    <style>
+
+        .btn-mode {
+
+            background-color: #3c8200;
+
+            color: #fff;
+
+            font-size: 85%;
+
+            border: none;
+
+            padding: 2px 15px;
+
+            margin-left: 5px;
+
+        }
+
+        .btn-mode:disabled {
+
+            background-color:gray;
+
+        }
+
+    </style>
+
+    <script type="text/javascript" language="javascript">
+        function focusTextBox(obj, objtxt) {
+
+            if (obj.value == objtxt) {
+
+                obj.value = '';
+                obj.select();
+
+            }
+
+        }
+        function blurTextBox(obj, objtxt) {
+
+            if (obj.value == '') {
+
+                obj.value = objtxt;
+
+            }
+
+        }
+
+        function setHidValue() {
+
+            var obj = document.getElementById('ctl00_holderContent_hidStatus');
+
+            obj.value = '1';
+
+        }
+
+
+
+        function checkall(num, maj) {
+
+            var tag = num;
+
+            var Alen = num.length;
+
+            var switch_checked = maj.checked;
+
+            var len = document.aspnetForm.elements.length;
+
+
+
+            for (var i = 0; i < len; i++) {
+
+                if (document.aspnetForm.elements[i].name.indexOf(tag) != -1)
+
+                    document.aspnetForm.elements[i].checked = switch_checked;
+
+            }
+
+        }
+    </script>
+
+</head>
+
+<body>
+
+    <form name="aspnetForm" method="post" action="wFrmExamQandASearch.aspx" id="aspnetForm">
+
+<div>
+
+<input type="hidden" name="__LASTFOCUS" id="__LASTFOCUS" value="<MASKED len=0 sha256_12=e3b0c44298fc>" />
+
+<input type="hidden" name="__EVENTTARGET" id="__EVENTTARGET" value="<MASKED len=0 sha256_12=e3b0c44298fc>" />
+
+<input type="hidden" name="__EVENTARGUMENT" id="__EVENTARGUMENT" value="<MASKED len=0 sha256_12=e3b0c44298fc>" />
+
+<input type="hidden" name="__VIEWSTATE" id="__VIEWSTATE" value="<MASKED len=10716 sha256_12=4699f6e6abb2>" />
+
+</div>
+
+
+
+<script type="text/javascript">
+
+//<![CDATA[
+
+var theForm = document.forms['aspnetForm'];
+
+if (!theForm) {
+
+    theForm = document.aspnetForm;
+
+}
+
+function __doPostBack(eventTarget, eventArgument) {
+
+    if (!theForm.onsubmit || (theForm.onsubmit() != false)) {
+
+        theForm.__EVENTTARGET.value = eventTarget;
+
+        theForm.__EVENTARGUMENT.value = eventArgument;
+
+        theForm.submit();
+
+    }
+
+}
+
+//]]>
+
+</script>
+
+
+
+
+
+<script src="/WebResource.axd?d=krlfWsYqGFqNJFQMANxPNuygqflGnjRZNI6hBdjhZwk0jS3270wIVB46g2IV3CUTIlN3MpmAvmU6MimMUgNoRPSB9mY1&amp;t=639191008048199015" type="text/javascript"></script>
+
+
+
+
+
+<script src="/ScriptResource.axd?d=p1vrxQoWG7gyZlDdbEty6wtBBRLULG5fXVapJ463NqMHsfMdSPq1W48hwuqpCLYctRhrWXP1l8G4fN2Mx-ermYJxwplgmdBWb4NqbVGDMs0XCACX3CzDZ1KeJ7UKEIhSUIvvAHkRVj-bNlUQqAXGIUK94Q1HKTK6nGAMmzLupNYvkv8j0&amp;t=559a934d" type="text/javascript"></script>
+
+<script src="/ScriptResource.axd?d=tCWKrScGqDm4zA5bkIoCJwDgCxA57QLQRlxEvUmPhgml5cQ3COQxZ6pmTpwAuOE-IfLwxgTAYA_XMgtWpBUPpvXGXEWdoTW5MwEhDHTQ7d8u1JCaqrn0XzuL87pYHKw8BCcME2pXiU8_lo0n8ugj5EwAQHj6Klqt6gZEBXcOMFDCc1p4gq5MoIQRIkQQWG3sBBiaQw2&amp;t=559a934d" type="text/javascript"></script>
+
+<script src="/WebResource.axd?d=ATDoJxue7_CKstUPi3cT4Gs8nzloLRS0WeaVazSFcZSJEdccVMblEUqbID51Hsq2zUbVTPj-OsCrTXn6H0PKvlRDFPY1&amp;t=639191008048199015" type="text/javascript"></script>
+
+<div>
+
+
+
+	<input type="hidden" name="__VIEWSTATEGENERATOR" id="__VIEWSTATEGENERATOR" value="<MASKED len=8 sha256_12=aac4556c2c73>" />
+
+	<input type="hidden" name="__VIEWSTATEENCRYPTED" id="__VIEWSTATEENCRYPTED" value="<MASKED len=0 sha256_12=e3b0c44298fc>" />
+
+	<input type="hidden" name="__EVENTVALIDATION" id="__EVENTVALIDATION" value="<MASKED len=1072 sha256_12=4ddd1da08beb>" />
+
+</div>
+
+        <div>
+
+            <a href='#C' id="gotocenter" title="跳到主要內容" tabindex="1" class="sr-only sr-only-focusable">跳到主要內容</a>
+
+            <div id="divFixTop">
+
+                <div id="divMenu" class="container">                    
+
+                    <div class="container">
+
+                        <nav class="navbar yamm navbar-right">
+
+                            <div class="container-fluid">
+
+                                <div class="navbar-header">
+
+                                    <button type="button" class="navbar-toggle collapsed" data-toggle="collapse" data-target="#navbar" aria-expanded="false" aria-controls="navbar">
+
+                                        <span class="sr-only">Toggle navigation</span>
+
+                                        <span class="icon-bar"></span>
+
+                                        <span class="icon-bar"></span>
+
+                                        <span class="icon-bar"></span>
+
+                                    </button>
+
+                                    <a class="navbar-brand" href="#">功能選單</a>
+
+                                </div>
+
+                                <div id="navbar" class="navbar-collapse collapse">
+
+                                    <a id="U" href="#U" accesskey="U" tabindex="1" style="float: left;" class="sr-only sr-only-focusable" title="上方功能區塊">:::</a>
+
+                                    <ul class="nav navbar-nav">
+
+                                        <li class="dropdown yamm-fw">
+
+                                            <a id="ctl00_lnkMenuItem1" class="dropdown-toggle" data-toggle="dropdown" role="button" aria-expanded="false" href="wfrmSiteMap.aspx">網站導覽</a>
+
+                                        </li>
+
+                                        <li class="dropdown yamm-fw">
+
+                                            <a id="ctl00_lnkMenuItem2" title="另開新視窗，開啟「考選部首頁」" class="dropdown-toggle" data-toggle="dropdown" role="button" aria-expanded="false" href="https://wwwc.moex.gov.tw" target="_blank">回考選部首頁</a>
+
+                                        </li>                                        
+
+                                    </ul>
+
+                                </div>
+
+                                <!--/.nav-collapse -->
+
+                            </div>
+
+                            <!--/.container-fluid -->
+
+                        </nav>
+
+                    </div>
+
+                </div>                                                               
+
+            </div>
+
+            <div id="divHeader">
+
+                <div class="container">
+
+                    <div class="top-header">
+
+                        <div class="top-logo">
+
+                            <h1><img src="../images/logo_moex.png" class="img-responsive" alt="考選部-考畢試題查詢平臺" title="考選部-考畢試題查詢平臺" /></h1>
+
+                        </div>
+
+                        <div class="top-title">
+
+                            <span>考畢試題查詢平臺</span>
+
+                        </div>
+
+                    </div>
+
+                </div>
+
+            </div>            
+
+            <div id="divContent">
+
+                <div class="container">
+
+                    
+
+                        <a id="C" href="#C" accesskey="C" style="float: left;" class="sr-only sr-only-focusable" title="中央內容區塊">:::</a>
+
+                        <div id="divSubject">
+
+                            <div style="padding-left: 30px;">
+
+                                <h2 style="font-size: 140%; font-weight: bold; margin: 0px; padding-left: 5px; color: #0e8383; border-left: 5px solid #0e8383;">考畢試題查詢</h2>
+
+                            </div>
+
+                            
+
+<!-- AddToAny BEGIN -->
+
+<div style="display: table-cell; width: 140px; vertical-align: bottom; padding-bottom: 5px;">
+
+    <div class="a2a_kit a2a_kit_size_21 a2a_default_style">
+
+        
+
+        <a class="a2a_button_facebook" title="另開新視窗，分享至 Facebook"><img src="../../images/icon_facebook.png" border="0" alt="Facebook 臉書圖示"></a>
+
+        <a class="a2a_button_line" title="另開新視窗，分享至 Line"><img src="../../images/icon_line.png" border="0" alt="Line 圖示"></a>
+
+        <a class="a2a_button_twitter" title="另開新視窗，分享至 Twitter"><img src="../../images/icon_twitter.png" border="0" alt="Twitter 推特圖示"></a>
+
+        <a class="a2a_button_plurk" title="另開新視窗，分享至 Plurk"><img src="../../images/icon_plurk.png" border="0" alt="Plurk 噗浪圖示"></a>
+
+        <a title="友善列印" href="javascript:window.print();"><img src="../../images/icon_print.png" border="0" alt="列印圖示"></a>
+
+    </div>
+
+    <noscript>
+
+        <div style="text-align: right;">請按Ctrl+P即可列印.</div>
+
+    </noscript>
+
+    <script>
+
+        var a2a_config = a2a_config || {};
+
+        a2a_config.locale = "zh-TW";
+
+        a2a_config.prioritize = ["facebook", "line", "twitter", "google_plus", "linkedin", "plurk", "email", "print"];
+
+    </script>
+
+    <script src="https://static.addtoany.com/menu/page.js"></script>
+
+    <!-- AddToAny END -->
+
+</div>
+
+                        </div>
+
+                    
+
+                    <div class="div-content">                        
+
+                        
+
+
+
+            <div id="ctl00_holderContent_Panel1" onkeypress="javascript:return WebForm_FireDefaultButton(event, 'ctl00_holderContent_btnQuery')">
+
+	
+
+                <div>
+
+                    <div style="display: inline-block;">
+
+                        ◎ 本考畢試題檔案格式係以PDF文件製作，請確定您已安裝Adobe Reader（<a title="另開視窗，連結到Adobe" href="https://get.adobe.com/tw/reader/" target="_blank">下載安裝Adobe Reader</a>）。
+
+                    </div>
+
+                    <div style="display: inline-block;">
+
+                        ◎ 最新考試考畢試題因上載前有相關檢核作業程序，公布時間為當次考試全部筆試結束之次日上午10時。
+
+                    </div>
+
+                    <div style="display: inline-block;">                        
+
+                        ◎ <a href="/content/wfrmContent.aspx?menu_id=1189">考畢試題說明</a>&nbsp;│&nbsp;<a href="/content/wfrmContent.aspx?menu_id=242">考畢試題查閱管道</a>&nbsp;│&nbsp;文字檔格式轉換及語音朗讀簡易操作指引<a href="/content/文字檔格式轉換及語音朗讀簡易操作指引.pdf" target="_blank" title="另開視窗，連結到文字檔格式轉換及語音朗讀簡易操作指引（PDF檔）"><img src="/images/file_icon/pdf.png" alt="文字檔格式轉換及語音朗讀簡易操作指引（PDF檔）" style="vertical-align: middle;" /></a>&nbsp;<a href="/content/文字檔格式轉換及語音朗讀簡易操作指引.docx" target="_blank" title="另開視窗，連結到文字檔格式轉換及語音朗讀簡易操作指引（DOCX檔）"><img src="/images/file_icon/docx.png" alt="文字檔格式轉換及語音朗讀簡易操作指引（DOCX檔）" style="vertical-align: middle;" /></a>
+
+                        <input type="hidden" name="ctl00$holderContent$hidStatus" id="ctl00_holderContent_hidStatus" />
+
+                    </div>
+
+                    <br />
+
+                    <div class="query-block">
+
+                        <script type="text/javascript">
+
+//<![CDATA[
+
+Sys.WebForms.PageRequestManager._initialize('ctl00$holderContent$ScriptManager1', document.getElementById('aspnetForm'));
+
+Sys.WebForms.PageRequestManager.getInstance()._updateControls(['tctl00$holderContent$UpdatePanel1'], [], [], 90);
+
+	//]]>
+
+</script>
+
+
+
+                        <div id="ctl00_holderContent_UpdatePanel1">
+
+		
+
+                                <div style="display: inline-block;">
+
+                                    <label for='ctl00_holderContent_wUctlExamYearStart_ddlExamYear'>考試年度：</label>
+
+                                    <select name="ctl00$holderContent$wUctlExamYearStart$ddlExamYear" onchange="javascript:setTimeout('__doPostBack(\'ctl00$holderContent$wUctlExamYearStart$ddlExamYear\',\'\')', 0)" id="ctl00_holderContent_wUctlExamYearStart_ddlExamYear" title="考試年度(起)">
+
+			<option value="2026">115</option>
+
+			<option value="2025">114</option>
+
+			<option value="2024">113</option>
+
+			<option selected="selected" value="2023">112</option>
+
+			<option value="2022">111</option>
+
+			<option value="2021">110</option>
+
+			<option value="2020">109</option>
+
+			<option value="2019">108</option>
+
+			<option value="2018">107</option>
+
+			<option value="2017">106</option>
+
+			<option value="2016">105</option>
+
+			<option value="2015">104</option>
+
+			<option value="2014">103</option>
+
+			<option value="2013">102</option>
+
+			<option value="2012">101</option>
+
+			<option value="2011">100</option>
+
+			<option value="2010">99</option>
+
+			<option value="2009">98</option>
+
+			<option value="2008">97</option>
+
+			<option value="2007">96</option>
+
+			<option value="2006">95</option>
+
+			<option value="2005">94</option>
+
+			<option value="2004">93</option>
+
+			<option value="2003">92</option>
+
+			<option value="2002">91</option>
+
+			<option value="2001">90</option>
+
+			<option value="2000">89</option>
+
+			<option value="1999">88</option>
+
+			<option value="1998">87</option>
+
+			<option value="1997">86</option>
+
+			<option value="1996">85</option>
+
+			<option value="1995">84</option>
+
+			<option value="1994">83</option>
+
+			<option value="1993">82</option>
+
+			<option value="1992">81</option>
+
+
+
+		</select>
+
+
+
+                                    &nbsp;~&nbsp;<select name="ctl00$holderContent$wUctlExamYearEnd$ddlExamYear" onchange="javascript:setTimeout('__doPostBack(\'ctl00$holderContent$wUctlExamYearEnd$ddlExamYear\',\'\')', 0)" id="ctl00_holderContent_wUctlExamYearEnd_ddlExamYear" title="考試年度(迄)">
+
+			<option value="2026">115</option>
+
+			<option value="2025">114</option>
+
+			<option selected="selected" value="2024">113</option>
+
+			<option value="2023">112</option>
+
+			<option value="2022">111</option>
+
+			<option value="2021">110</option>
+
+			<option value="2020">109</option>
+
+			<option value="2019">108</option>
+
+			<option value="2018">107</option>
+
+			<option value="2017">106</option>
+
+			<option value="2016">105</option>
+
+			<option value="2015">104</option>
+
+			<option value="2014">103</option>
+
+			<option value="2013">102</option>
+
+			<option value="2012">101</option>
+
+			<option value="2011">100</option>
+
+			<option value="2010">99</option>
+
+			<option value="2009">98</option>
+
+			<option value="2008">97</option>
+
+			<option value="2007">96</option>
+
+			<option value="2006">95</option>
+
+			<option value="2005">94</option>
+
+			<option value="2004">93</option>
+
+			<option value="2003">92</option>
+
+			<option value="2002">91</option>
+
+			<option value="2001">90</option>
+
+			<option value="2000">89</option>
+
+			<option value="1999">88</option>
+
+			<option value="1998">87</option>
+
+			<option value="1997">86</option>
+
+			<option value="1996">85</option>
+
+			<option value="1995">84</option>
+
+			<option value="1994">83</option>
+
+			<option value="1993">82</option>
+
+			<option value="1992">81</option>
+
+
+
+		</select>
+
+
+
+                                    <input type="submit" name="ctl00$holderContent$btnYear" value="依考試年度設定考試簡稱" id="ctl00_holderContent_btnYear" class="btn_display_none" />
+
+                                </div>
+
+                                <div style="display: inline-block;">
+
+                                    
+
+                                </div>
+
+                                <div style="display: block;">
+
+                                    <label for='ctl00_holderContent_ddlExamCode'>考試簡稱：</label>&nbsp;<select name="ctl00$holderContent$ddlExamCode" id="ctl00_holderContent_ddlExamCode" style="width: 85%;">
+
+			<option selected="selected" value="">所有考試簡稱...</option>
+
+			<option value="113200">113年特種考試地方政府公務人員考試</option>
+
+			<option value="113190">113年專技人員高等考試建築師、32類科技師(含第二次食品技師)、大地工程技師考試分階段考試(第二階段考試)暨普通考試不動產經紀人、記帳士考...</option>
+
+			<option value="113180">113年第三次專門職業及技術人員高等考試護理師考試</option>
+
+			<option value="113170">113年警察人員升官等考試</option>
+
+			<option value="113160">113年國防法務官考試</option>
+
+			<option value="113111">113年公務人員特種考試司法官考試（第二試）、113年專門職業及技術人員高等考試律師考試（第二試）</option>
+
+			<option value="113150">113年公務人員高等考試一級暨二級考試</option>
+
+			<option value="113140">113年公務人員特種考試外交領事人員及外交行政人員考試、國際經濟商務人員考試、民航人員考試、原住民族考試</option>
+
+			<option value="113130">113年專門職業及技術人員高等考試會計師、不動產估價師、專利師、民間之公證人考試</option>
+
+			<option value="113120">113年公務人員特種考試司法人員考試、法務部調查局調查人員考試、海岸巡防人員考試、未具擬任職務任用資格取得法官遴選資格考試</option>
+
+			<option value="113110">113年公務人員特種考試司法官考試（第一試）、113年專門職業及技術人員高等考試律師考試（第一試）</option>
+
+			<option value="113100">113年第二次專技人員高等考試營養師、護理師、社會工作師考試、113年專技人員高等考試心理師、法醫師、語言治療師、聽力師、牙體技術師、公共衛...</option>
+
+			<option value="113090">113年第二次專技人員高等考試醫師中醫師考試分階段考試（第一階段考試）、牙醫師藥師考試分階段考試、醫事檢驗師、醫事放射師、物理治療師考試、1...</option>
+
+			<option value="113080">113年公務人員高等考試三級考試暨普通考試</option>
+
+			<option value="113070">113年第二次專技人員高等考試醫師中醫師考試分階段考試（第二階段考試）</option>
+
+			<option value="113060">113年公務人員特種考試警察人員考試、一般警察人員考試、國家安全情報人員考試、移民行政人員考試</option>
+
+			<option value="113050">113年專技人員高等考試大地工程技師考試分階段考試(第一階段考試)、驗船師、第一次食品技師考試、高等暨普通考試消防設備人員考試、普通考試地政...</option>
+
+			<option value="113040">113年公務人員特種考試關務人員考試、身心障礙人員考試、國軍上校以上軍官轉任公務人員考試</option>
+
+			<option value="113030">113年第一次專技人員高等考試營養師、護理師、社會工作師考試</option>
+
+			<option value="113020">113年第一次專技人員高等考試醫師牙醫師中醫師藥師考試分階段考試、醫事檢驗師、醫事放射師、物理治療師考試</option>
+
+			<option value="113010">113年公務人員初等考試</option>
+
+			<option value="112220">112年第二次國防法務官考試</option>
+
+			<option value="112200">112年特種考試地方政府公務人員考試</option>
+
+			<option value="112190">112年專技人員高等考試建築師、25類科技師(含第二次食品技師)、大地工程技師考試分階段考試(第二階段考試)暨普通考試不動產經紀人、記帳士考...</option>
+
+			<option value="112180">112年第三次專門職業及技術人員高等考試護理師考試</option>
+
+			<option value="112170">112年公務人員升官等考試、112年關務人員升官等考試、112年交通事業鐵路人員升資考試、112年交通事業港務人員升資考試</option>
+
+			<option value="112121">112年公務人員特種考試司法官考試（第二試）、112年專門職業及技術人員高等考試律師考試（第二試）</option>
+
+			<option value="112160">112年公務人員高等考試一級暨二級考試</option>
+
+			<option value="112150">112年公務人員特種考試外交領事人員及外交行政人員考試、國際經濟商務人員考試、民航人員考試、原住民族考試</option>
+
+			<option value="112140">112年專門職業及技術人員高等考試會計師、不動產估價師、專利師考試</option>
+
+			<option value="112130">112年公務人員特種考試司法人員考試、法務部調查局調查人員考試、海岸巡防人員考試、移民行政人員考試、未具擬任職務任用資格取得法官遴選資格考試</option>
+
+			<option value="112120">112年公務人員特種考試司法官考試（第一試）、112年專門職業及技術人員高等考試律師考試（第一試）</option>
+
+			<option value="112110">112年第二次專技人員高等考試營養師、護理師、社會工作師考試、112年專技人員高等考試法醫師、語言治療師、聽力師、牙體技術師、公共衛生師考試...</option>
+
+			<option value="112100">112年第二次專技人員高等考試醫師中醫師考試分階段考試（第一階段）、牙醫師藥師考試分階段考試、醫事檢驗師、醫事放射師、物理治療師考試、112...</option>
+
+			<option value="112090">112年公務人員高等考試三級考試暨普通考試</option>
+
+			<option value="112080">112年第二次專技人員高等考試醫師中醫師考試分階段考試（第二階段考試）</option>
+
+			<option value="112070">112年公務人員特種考試警察人員考試、一般警察人員考試、國家安全情報人員考試、交通事業鐵路人員考試、退除役軍人轉任公務人員考試</option>
+
+			<option value="112060">112年專技人員高等考試大地工程技師考試分階段考試(第一階段考試)、驗船師、引水人、第一次食品技師考試、高等暨普通考試消防設備人員考試、普通...</option>
+
+			<option value="112050">112年公務人員特種考試關務人員考試、身心障礙人員考試、國軍上校以上軍官轉任公務人員考試</option>
+
+			<option value="112210">112年國防法務官考試</option>
+
+			<option value="112040">112年專門職業及技術人員普通考試導遊人員、領隊人員考試</option>
+
+			<option value="112030">112年第一次專技人員高等考試營養師、護理師、社會工作師考試</option>
+
+			<option value="112020">112年第一次專技人員高等考試醫師牙醫師中醫師藥師考試分階段考試、醫事檢驗師、醫事放射師、物理治療師考試</option>
+
+			<option value="112010">112年公務人員初等考試</option>
+
+
+
+		</select>
+
+                                </div>
+
+                            
+
+	</div>
+
+                        <div id="ctl00_holderContent_divSearchSimple" style="text-align: right;">
+
+                            <input type="submit" name="ctl00$holderContent$btnSearch" value="查詢" id="ctl00_holderContent_btnSearch" class="btn-search" />
+
+                            <input type="submit" name="ctl00$holderContent$ibtnFull" value="切換至進階查詢" id="ctl00_holderContent_ibtnFull" class="btn-search" />
+
+                            
+
+                            <input type="submit" name="ctl00$holderContent$btnFull" value="切換至進階查詢" id="ctl00_holderContent_btnFull" class="btn_display_none_inline" />
+
+                        </div>
+
+                        
+
+                        
+
+                        
+
+                    </div>
+
+                </div>
+
+                <hr />
+
+                
+
+                <span id="ctl00_holderContent_lblStatistics">您查詢的結果大於 6000 筆，為了避免影響系統操作的效率，請調整所下的查詢條件以縮小查詢範圍</span><br />
+
+                <div>
+
+                    
+
+                    <table id="ctl00_holderContent_tblExamQand" class="ULQandA" cellspacing="0" cellpadding="0" border="0" style="border-collapse:collapse;">
+
+
+
+	</table>
+
+                </div>
+
+            
+
+</div>
+
+       
+
+
+
+                    </div>
+
+                </div>
+
+            </div>
+
+            <div id="divPageBottom">
+
+                <div class="container">
+
+                    <div style="padding: 0 45px; position: relative;">
+
+                        <div class="information">
+
+                            本網站資料，歡迎朋友連結使用。但引用時，請註明資料來源並請確保資料之完整（包括本項宣示在內），均不得任意增刪<br />
+
+                            考選部 地址：116203臺北市文山區試院路1-1號 (<a id="ctl00_lnkMap" title="另開視窗，連結到考選部所在位置" href="http://wwwc.moex.gov.tw/main/content/wfrmContent.aspx?menu_id=37" target="_blank">所在位置</a>），
+
+                            總機：(02)2236-9188（<a id="ctl00_HyperLink1" title="另開視窗，連結到考選部聯絡方式" href="http://wwwc.moex.gov.tw/main/content/wfrmContent.aspx?menu_id=40" target="_blank">聯絡方式</a>）<br />
+
+                            2018 Ministry of Examination R.O.C.(Taiwan) All rights reserved.<br />
+
+                            建議最佳解析度為1024*768或以上，並使用支援TLS 1.2(含)以上版本瀏覽器瀏覽
+
+                        </div>
+
+                        <div class="information_image">
+
+                            <a href="https://accessibility.moda.gov.tw/Applications/Detail?category=20251001155311" title="另開視窗，連結到通過AA等級無障礙網頁檢測" target="_blank" style="display: inline-block;">
+
+                                <img src="../images/aa.jpg" style="height: 40px;" alt="通過AA檢測等級無障礙網頁檢測" /></a>
+
+                        </div>                        
+
+                    </div>
+
+                </div>
+
+            </div>
+
+        </div>
+
+    
+
+
+
+<script type="text/javascript">
+
+//<![CDATA[
+
+WebForm_AutoFocus('ctl00_holderContent_btnSearch');Sys.Application.initialize();
+
+//]]>
+
+</script>
+
+</form>
+
+</body>
+
+</html>
+

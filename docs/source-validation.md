@@ -1,0 +1,219 @@
+# 官方來源驗證紀錄（P1-1）
+
+- 觀察日期：2026-11-01（Asia/Taipei）
+- 環境：Windows-11-10.0.26300-SP0、Python 3.14.7、httpx 0.28.1、beautifulsoup4 4.15.0、lxml 6.1.3、pypdf 6.21.4
+- 請求方式：全部使用 `httpx.Client`（憑證採 certifi），請求間隔 1.5～2.5 秒，單次驗證共約 25 個請求
+- 樣本年度：民國 112 年（西元 2023）、113 年（西元 2024）
+
+> 本文件只記錄實際觀察到的結果。未取得或無法確認的項目列於 §7，不以推測補足。
+
+## 1. 入口與網域
+
+| 項目 | 觀察結果 |
+| --- | --- |
+| 考選部首頁 | `https://www.moex.gov.tw/`（HTTP 200，「考選部 全球資訊網歡迎頁」） |
+| 考畢試題查詢頁 | `https://wwwq.moex.gov.tw/exam/wFrmExamQandASearch.aspx`（HTTP 200，標題「考畢試題查詢平臺-考選部」） |
+| 首頁入口連結 | 首頁「考畢試題」連結指向上述查詢頁（另含帶 `?y=2026&e=115111` 參數的連結，可直接帶入條件） |
+| 舊路徑 | `https://wwwc.moex.gov.tw/main/Exam/wfrmExamSearch.aspx` 與 `/main/home/wfrmHomeContent.aspx` 皆導向 `htmNotFoundPage.htm`（找不到頁面） |
+| 附件下載網域 | 同為 `wwwq.moex.gov.tw`，路徑 `/exam/wHandExamQandA_File.ashx` |
+| robots.txt | `https://wwwq.moex.gov.tw/robots.txt` 回 HTTP 404（無規則檔，回應本體為 big5 的 IIS 錯誤頁） |
+
+TLS 注意事項：本機 Python（3.14.7）預設根憑證載入異常（連 `example.com` 也 `CERTIFICATE_VERIFY_FAILED`），改用 httpx 內建的 certifi 憑證即可正常驗證。**不得以關閉 TLS 驗證解決**（符合 SPEC §7）。
+
+## 2. 查詢表單（簡易查詢）
+
+表單 `aspnetForm`，`method="post"`，`action="wFrmExamQandASearch.aspx"`。
+
+Hidden fields（不只有三個，需每次依最新回應完整回收）：
+
+- `__EVENTTARGET`、`__EVENTARGUMENT`、`__LASTFOCUS`
+- `__VIEWSTATE`（首次載入約 5,660 字元；查詢結果頁可達數十萬字元，確認可分段）
+- `__VIEWSTATEGENERATOR`、`__VIEWSTATEENCRYPTED`、`__EVENTVALIDATION`
+
+可見控制項：
+
+| 控制項 | 說明 |
+| --- | --- |
+| `ctl00$holderContent$wUctlExamYearStart$ddlExamYear` | 年度（起）。`option value` 為**西元年**（如 `2024`），顯示文字為民國（如 `113`），共 35 個選項（2026～1992） |
+| `ctl00$holderContent$wUctlExamYearEnd$ddlExamYear` | 年度（迄），格式同上 |
+| `ctl00$holderContent$ddlExamCode` | 考試簡稱。`value` 為考試代碼（如 `115111`），文字為官方全名；預設 `所有考試簡稱...`（`value=""`） |
+| `ctl00$holderContent$btnYear` | 「依考試年度設定考試簡稱」（隱藏按鈕，會重載考試清單） |
+| `ctl00$holderContent$btnSearch` | 查詢 |
+| `ctl00$holderContent$ibtnFull` / `btnFull` | 切換至進階查詢 |
+| `ctl00$holderContent$ibtnDownLoad` / `ibtnCancleSelect` | 官方的「試題打包」與「全部取消」（本工具不使用） |
+| `ctl00$holderContent$hidStatus` | 狀態隱藏欄位 |
+
+年度下拉選單的 `onchange` 會觸發 `__doPostBack(...,'')`。
+
+### 2.1 已驗證的表單事件行為
+
+1. **年度（迄）需透過 postback 才生效**：直接 POST 同時帶入起年與迄年時，回應只包含**起年**資料（`2023~2024` 只回 23 場考試、全部為 112 年）。以 `__EVENTTARGET=ctl00$holderContent$wUctlExamYearEnd$ddlExamYear` 觸發 postback 後再查詢，迄年才生效（結果因此超過上限而出現 6,000 筆提示）。
+2. 考試簡稱清單會隨年度改變，需先送出年度再取最新 `ddlExamCode` 選項。
+
+### 2.2 進階查詢
+
+以 `btnFull`/`ibtnFull` 送出後取得進階表單，額外控制項：
+
+| 控制項 | 說明 |
+| --- | --- |
+| `ctl00$holderContent$txtExamSetName` | 考試名稱關鍵字（placeholder：請輸入考試名稱關鍵字...） |
+| `ctl00$holderContent$txtCategoryName` | 類科關鍵字 |
+| `ctl00$holderContent$txtSubjectName` | 科目關鍵字 |
+| `ctl00$holderContent$ddlExamDisplayMode1` | 顯示模式：`0` 年度+考試名稱、`1` 等級+類科、`2` 科目 |
+| `ctl00$holderContent$btnQuery` | 查詢 |
+| `ctl00$holderContent$ibtnSimple` | 切換回簡易查詢 |
+
+實測 `txtSubjectName=行政法`、113 年：回傳 `共 11 考試 137 類科 137 科目`（HTTP 回應 291 KB），且涵蓋「行政法概要」——**伺服器端為部分字串比對**。
+
+此時結果頁的類科列改以 `<span>` 呈現、**沒有類科 checkbox**；科目列仍保留 `label.exam-title` 與 checkbox。解析器必須同時支援「label + checkbox」與「span（無 checkbox）」兩種形態。
+
+## 3. 查詢結果結構
+
+- 結果表格：`table#ctl00_holderContent_tblExamQand`。
+- 統計文字：`span#ctl00_holderContent_lblStatistics`，格式「共 N 考試 M 類科 K 科目」；無結果時為「**查無結果**」。
+- **無分頁**：單次查詢即回傳該條件下全部資料（113 年一年為 6.4 MB HTML、8,450 個 `tr`、3,566 個科目列），頁面中找不到分頁控制項或 `__doPostBack` 分頁連結。
+- 每一列在 DOM 中出現**兩次**（外層 `tr` 內再包一層 `table`/`tr`），必須以 checkbox `name` 去重。
+- 層級標記：
+  - `td.level1`：考試名稱列，附 `t=B`（盲用電腦專用試題，zip）與 `t=A`（本考試所有測驗題標準答案，PDF）。
+  - `td.level2`：類科列。未篩選時為 `label` + checkbox `ctl00$holderContent$chk_{考試代碼}_{類科代碼}`；伺服端篩選時為 `span`，無 checkbox。
+  - 科目列：`label.exam-title` + checkbox `ctl00$holderContent$chk_{考試代碼}_{類科代碼}_{科目代碼}`，並含 `t=Q`（試題）與 `t=S`（答案）連結。
+- 代碼格式：考試代碼 6 碼（`113010`）、類科代碼 3 碼（`501`）、**科目代碼長度不固定**（`0101`、`11`、`0305` 皆出現）。
+- 科目可能沒有答案連結（113 年 3,566 個科目中有 1,813 個無答案連結），不得因此推論為純申論。
+
+### 3.1 官方 6,000 筆上限
+
+113 與 112 兩年度一起查詢（設定迄年生效）時，回應為：
+
+> 您查詢的結果大於 6000 筆，為了避免影響系統操作的效率，請調整所下的查詢條件以縮小查詢範圍
+
+此時表格為 0 列、`lblStatistics` 顯示上述文字。單一年度（113 年 3,566 科目、112 年 4,721 科目）皆未觸及上限。
+
+### 3.2 官方統計與實際渲染列數不一致（未解差異）
+
+113 年單年度查詢：
+
+| 來源 | 考試 | 類科 | 科目 |
+| --- | --- | --- | --- |
+| `lblStatistics` 文字 | 21 | 639 | 3568 |
+| 實際 DOM（`td.level1` / `td.level2` / `label.exam-title`） | 21 | 638 | 3566 |
+
+差異為 1 個類科、2 個科目，原因未確認（推測為資料庫中存在但未渲染的紀錄，尚未證實）。112 年單年度同樣需要以「統計文字 vs 實際列數」雙軌核對。**完整性判定不得只依單一來源**，差異時應標示「結果未完整／待確認」並記錄。
+
+## 4. 無結果與錯誤頁
+
+| 情境 | HTTP | 辨識依據 |
+| --- | --- | --- |
+| 無結果 | 200 | `lblStatistics` 文字 = 「查無結果」，結果表格 0 列 |
+| 路徑不存在 | **200** | 最終 URL 變為 `htmNotFoundPage.htm?aspxerrorpath=...`，`<title>` 為「您所輸入的網址並不存在！」（utf-8） |
+| IIS 檔案不存在 | **404** | `<title>` 為「404 - 找不到檔案或目錄。」（**charset=big5**）；`robots.txt` 即回此頁 |
+
+錯誤頁以 HTTP 200 回傳，**不能只看狀態碼**判斷成功；必須檢查最終網址、標題與必要元素（結果表格、`lblStatistics`）是否存在，否則會把錯誤頁誤判為「零結果」。另有 big5 編碼的 IIS 錯誤頁，解碼需依回應標頭／頁面宣告處理。
+
+## 5. 附件下載
+
+以**全新 Client（完全不帶 Cookie）**直接 GET 附件 URL，皆成功；未觀察到重新導向。
+
+範例回應標頭（113 年公務人員初等考試 國文 試題）：
+
+```
+content-type: application/pdf
+content-length: 533598
+content-disposition: filename="112010_1501.pdf"
+cache-control: private
+```
+
+- `Content-Disposition` 提供官方檔名（試題 `{考試代碼}_{類科}{科目}.pdf`、答案 `{考試代碼}_ANS{類科}{科目}.pdf`），可作為原始檔名參考，但仍以內部穩定 ID 命名歸檔。
+- 本次樣本**未**回傳 `ETag`、`Last-Modified`；更新檢查因此需以重新下載比對 SHA-256 為備援（符合 SPEC §6）。
+- `Content-Length` 與實際傳輸長度相符。
+
+URL 參數：`?t={Q|S|M|A|B}&code={考試代碼}&c={類科代碼}&s={科目代碼}&q={卷次}`：
+
+| t | 官方標籤 | 說明 |
+| --- | --- | --- |
+| `Q` | 試題 | 單一考科試題 PDF |
+| `S` | 答案 | 測驗題標準答案 PDF |
+| `M` | 更正答案 | 測驗答案的更正版 PDF（113 年初等考試「法學大意」等 5 筆科目出現；同科可能同時有 `S` 與 `M`） |
+| `A` | 本考試所有測驗題標準答案 | 整場考試層級，不屬單一考科 |
+| `B` | 盲用電腦專用試題 | zip 檔，非 PDF |
+
+## 6. 樣本與預期結果
+
+| 檔案 | 來源 | 觀察重點 |
+| --- | --- | --- |
+| `tests/fixtures/html/search_form.html` | 簡易查詢頁 | 全部 hidden fields 與年度／考試簡稱選項；token 已遮罩 |
+| `tests/fixtures/html/full_form.html` | 進階查詢頁 | 關鍵字欄位與顯示模式 |
+| `tests/fixtures/html/result_sample.html` | 113 年結果縮減為 2 場考試（初等考試、關務人員考試） | 2 考試／75 類科／371 科目；371 個試題附件與 239 個答案附件（其中 5 個為 `t=M` 更正答案）；137 科目無答案；含考試層級 zip 與整場答案連結；統計文字已改成與列數一致 |
+| `tests/fixtures/html/result_stats_mismatch.html` | 113 年初等考試縮減樣本，統計文字故意多報 3 個科目 | 用於驗證「統計不符」的處理 |
+| `tests/fixtures/html/result_noresult.html` | 進階查詢查無資料 | 「查無結果」辨識 |
+| `tests/fixtures/html/result_limit_exceeded.html` | 112–113 兩年度查詢 | 官方 6,000 筆上限提示 |
+| `tests/fixtures/html/error_notfound.html` | 不存在的頁面 | HTTP 200 的錯誤頁 |
+| `tests/fixtures/expected/result_sample.expected.json` | 由 `scripts/build_fixtures.py` 產生 | 逐筆預期紀錄與 PDF 樣本雜湊 |
+| `tests/fixtures/pdf/*.pdf` | 7 份官方 PDF | 題型證據樣本，雜湊見 expected JSON |
+
+PDF 樣本首頁觀察（僅取第一頁前 300 字元，未做 OCR）：
+
+| 檔案 | 科目 | 首頁可見證據 |
+| --- | --- | --- |
+| `113010_501_0101_Q.pdf` | 112 初等考試 國文 | 「本試題共 45 題，其中單選題 35 題，複選題 10 題…各題答案須用 2B 鉛筆在試卡上依題號清楚劃記」 |
+| `113010_501_0101_S.pdf` | 同上答案 | 「測驗式試題標準答案」「單選題數：35題」 |
+| `112090_301_0101_Q.pdf` | 112 高考三級 國文（作文與測驗） | 「本科目試題包括作文及測驗兩部分」＋「甲、作文部分」 |
+| `112090_301_0403_Q.pdf` | 112 高考三級 行政法 | 申論式版面（甲、…），同科另有「測驗式試題標準答案」，屬混合型態的實際案例 |
+| `112090_301_0403_S.pdf` | 同上答案 | 「測驗式試題標準答案」「單選題數：25題」 |
+| `112090_301_0305_Q.pdf` | 112 高考三級 政治學 | 純申論題型（一、二、各 25 分），且無答案連結 |
+| `112190_001_0301_Q.pdf` | 112 技師 結構設計 | 申論／計算題型，含規範引用 |
+
+### 6.1 查詢流程實測（P1-3，2026-11-01）
+
+以 `MoexClient`＋`QueryService` 對官方站點實際執行單一年度查詢（民國 113 年）：
+
+| 項目 | 結果 |
+| --- | --- |
+| 請求數 | 3（取得表單 → 迄年 postback → 送出查詢） |
+| 啟動間隔 | 約 1.1～2.5 秒（含首次連線時間；間隔為最小間距，非固定節奏） |
+| 結果 | 3,566 筆考科紀錄；狀態為「結果未完整」，因官方統計 21/639/3568 與實際列數 21/638/3566 不符 |
+| postback | 1 次；`__EVENTTARGET` 觸發迄年變更確為必要 |
+| 附件連結 | 例：`t=Q&code=113010&c=501&s=0101&q=1` 與對應 `t=S`，與 fixture 一致 |
+
+確認：單一年度不會觸及 6,000 筆上限；完整性會依 §3.2 的已知差異自動標示未完整，而非誤報成功。
+
+### 6.2 PDF 首頁題型檢查實測（P1-4，2026-11-01）
+
+以 `app/engine/pdf_inspector.py`（規則版本 `pdf-v1`、只讀首頁前 300 字元、5 秒逾時）檢查 7 份官方樣本：
+
+| 檔案 | 頁數 | 判定 | 依據 | 耗時 |
+| --- | --- | --- | --- | --- |
+| `112090_301_0101_Q.pdf`（高考三級國文） | 4 | 混合題 | `pdf:explicit-mixed`（「本科目試題包括作文及測驗兩部分」） | 271 ms |
+| `113010_501_0101_Q.pdf`（初等國文） | 8 | 測驗題 | `pdf:choice-count`（共 45 題＝單選 35＋複選 10） | 264 ms |
+| `112090_301_0305_Q.pdf`（政治學） | 1 | 未確認 | `pdf:insufficient-evidence` | 211 ms |
+| `112090_301_0403_Q.pdf`（行政法） | 4 | 未確認 | `pdf:insufficient-evidence` | 242 ms |
+| `112190_001_0301_Q.pdf`（結構設計） | 3 | 未確認 | `pdf:insufficient-evidence` | 249 ms |
+| `113010_501_0101_S.pdf`（答案） | 1 | 未確認 | `pdf:insufficient-evidence`（答案檔不作為題型依據） | 271 ms |
+| `112090_301_0403_S.pdf`（答案） | 1 | 未確認 | `pdf:insufficient-evidence` | 240 ms |
+
+觀察與限制：
+
+- 這 7 份樣本中，前 300 字元內只有 1 份含明確混合敘述、1 份可由題數加總判定；其餘 5 份沒有排他證據，因此維持「未確認」。**這是刻意的保守結果，不代表準確率或覆蓋率**。
+- 行政法（`112090_301_0403_Q.pdf`）實際為申論＋測驗的混合型態（其答案檔載明「測驗式試題標準答案、單選題數 25 題」），但首頁前 300 字元在「甲、」之前即用盡，無法取得結構性證據；依 SPEC 不得為此讀取後續內容。
+- 檔案層級的無效判定（HTML 偽裝、截斷檔、缺失檔）與嗅探失敗（逾時）已分別驗證為不同結果。
+- 每次檢查含子程序啟動約 0.2～0.3 秒（Windows、spawn）；正式流程每份附件僅檢查一次。
+
+## 7. 未驗證項目與缺口
+
+1. **無文字層（掃描）PDF**：本次下載的樣本皆有文字層，尚未取得官方的掃描版樣本；P1-4 的掃描測試將使用自製影像 PDF，並在測試中標示為合成樣本。
+2. **拆卷（同科目多份試題）**：112、113 兩年度全量資料中未出現 `q=2` 或同科目第二個試題連結，尚未觀察到實際拆卷案例。
+3. **Session 過期／ViewState 失效**：尚未在真實站點重現，將於 P1-3 以模擬 HTTP 驗證。
+4. **官方統計與渲染列數差異原因**：未確認。
+5. **顯示模式 1／2（等級+類科、科目）**：未測試其版面與 checkbox 命名規則。
+6. **一次超過兩年度**：因 6,000 筆上限無法取得，未驗證更大範圍的行為。
+7. **使用規範**：僅確認 robots.txt 不存在（404），尚未取得網站使用條款對自動化取用的明確文字。
+
+## 8. 對 SPEC／AGENT 的影響（已於 2026-11-01 同步修正）
+
+以下與原文件假設不同，已同步修正 SPEC.md、AGENT.md、TASKS.md：
+
+1. **沒有分頁機制**：SPEC §3.3／AGENT §4 已改為「單次查詢即回傳全部結果，以年度分批」；禁止實作不存在的分頁事件。
+2. **官方上限為 6,000 筆**：SPEC §3.3 已改為以官方 6,000 筆為實際約束，並明定該提示訊息屬「結果過大／未完整」，不得當成零結果。
+3. **年度（迄）需 postback**：AGENT §4／SPEC §7 已明列以 `__EVENTTARGET` 觸發之需求，P1-3 必須實作。
+4. **完整性雙軌核對**：SPEC §3.3 已要求同時記錄統計文字與實際列數，不一致時保留兩個數字並標示未完整。
+5. **伺服端關鍵字比對**：SPEC §3.1 已明定可作前篩，但最終仍以本機比對為準；類科列可能是無 checkbox 的 `span`。
+6. **錯誤頁可能 HTTP 200**：SPEC §7／AGENT §4 已要求以最終網址、標題與必要元素辨識。

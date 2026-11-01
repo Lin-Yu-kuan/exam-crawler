@@ -1,0 +1,122 @@
+{
+  "entry_url": "https://wwwq.moex.gov.tw/exam/wFrmExamQandASearch.aspx",
+  "final_url": "https://wwwq.moex.gov.tw/exam/wFrmExamQandASearch.aspx",
+  "status": 200,
+  "content_type": "text/html; charset=utf-8",
+  "bytes": 31648,
+  "sha256": "d1fe3401582c81f601ec2494345aead1f1c0ffadd20d5cf16a4e6d961f1f12fd",
+  "observed_at": "2026-11-01T21:51:49+0800",
+  "title": "考畢試題查詢平臺-考選部",
+  "form_summary": {
+    "forms": [
+      "<form name=\"aspnetForm\" method=\"post\" action=\"wFrmExamQandASearch.aspx\" id=\"aspnetForm\">"
+    ],
+    "controls": [
+      {
+        "tag": "input",
+        "type": "hidden",
+        "name": "__EVENTTARGET",
+        "id": "__EVENTTARGET",
+        "value_len": 0
+      },
+      {
+        "tag": "input",
+        "type": "hidden",
+        "name": "__EVENTARGUMENT",
+        "id": "__EVENTARGUMENT",
+        "value_len": 0
+      },
+      {
+        "tag": "input",
+        "type": "hidden",
+        "name": "__LASTFOCUS",
+        "id": "__LASTFOCUS",
+        "value_len": 0
+      },
+      {
+        "tag": "input",
+        "type": "hidden",
+        "name": "__VIEWSTATE",
+        "id": "__VIEWSTATE",
+        "value_len": 5660
+      },
+      {
+        "tag": "input",
+        "type": "hidden",
+        "name": "__VIEWSTATEGENERATOR",
+        "id": "__VIEWSTATEGENERATOR",
+        "value_len": 8
+      },
+      {
+        "tag": "input",
+        "type": "hidden",
+        "name": "__VIEWSTATEENCRYPTED",
+        "id": "__VIEWSTATEENCRYPTED",
+        "value_len": 0
+      },
+      {
+        "tag": "input",
+        "type": "hidden",
+        "name": "__EVENTVALIDATION",
+        "id": "__EVENTVALIDATION",
+        "value_len": 840
+      },
+      {
+        "tag": "input",
+        "type": "hidden",
+        "name": "ctl00$holderContent$hidStatus",
+        "id": "ctl00_holderContent_hidStatus",
+        "value_len": 0
+      },
+      {
+        "tag": "select",
+        "type": null,
+        "name": "ctl00$holderContent$wUctlExamYearStart$ddlExamYear",
+        "id": "ctl00_holderContent_wUctlExamYearStart_ddlExamYear",
+        "value_len": 0
+      },
+      {
+        "tag": "select",
+        "type": null,
+        "name": "ctl00$holderContent$wUctlExamYearEnd$ddlExamYear",
+        "id": "ctl00_holderContent_wUctlExamYearEnd_ddlExamYear",
+        "value_len": 0
+      },
+      {
+        "tag": "input",
+        "type": "submit",
+        "name": "ctl00$holderContent$btnYear",
+        "id": "ctl00_holderContent_btnYear",
+        "value_len": 11
+      },
+      {
+        "tag": "select",
+        "type": null,
+        "name": "ctl00$holderContent$ddlExamCode",
+        "id": "ctl00_holderContent_ddlExamCode",
+        "value_len": 0
+      },
+      {
+        "tag": "input",
+        "type": "submit",
+        "name": "ctl00$holderContent$btnSearch",
+        "id": "ctl00_holderContent_btnSearch",
+        "value_len": 2
+      },
+      {
+        "tag": "input",
+        "type": "submit",
+        "name": "ctl00$holderContent$ibtnFull",
+        "id": "ctl00_holderContent_ibtnFull",
+        "value_len": 7
+      },
+      {
+        "tag": "input",
+        "type": "submit",
+        "name": "ctl00$holderContent$btnFull",
+        "id": "ctl00_holderContent_btnFull",
+        "value_len": 7
+      }
+    ]
+  }
+}

@@ -1,0 +1,24 @@
+# 虛擬環境與產生物
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+.pytest_cache/
+
+# 產生的資料（題庫、資料庫、暫存、日誌）
+downloads/
+data/
+*.db
+*.sqlite
+*.db-journal
+*.part
+logs/
+*.log
+
+# 原始抓取樣本（體積大且可重跑 scripts/ 重新取得；去敏感化 fixture 仍納入版本控制）
+tests/fixtures/source/*.html
+tests/fixtures/source/_rows_preview*.txt
+
+# 編輯器
+.vscode/
+.DS_Store

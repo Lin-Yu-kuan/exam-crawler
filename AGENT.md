@@ -18,13 +18,13 @@ MVP 固定 Python 3.10+、httpx 同步 Client、BeautifulSoup＋lxml、pypdf、S
 | app/config.py | 超時、限速、大小限制、來源白名單及模板預設 |
 | app/crawler/moex_client.py | HTTP、Session、表單事件；不處理 UI 或寫檔 |
 | app/crawler/parser.py | HTML／表單解析為模型；不做網路或 PDF I/O |
-| app/crawler/rate_limiter.py | 所有站點請求共用的限速、退避及 Retry-After |
-| app/engine/query_service.py | 分頁、快照完整性、快取及查詢恢復 |
+| app/crawler/rate_limiter.py | 所有站點請求共用的限速、在途上限（預設 2，範圍 1～4）、退避及 Retry-After |
+| app/engine/query_service.py | 年度批次查詢、快照完整性（統計與列數雙軌核對）、快取及查詢恢復 |
 | app/engine/filter.py | 純函式比對、候選聚合與選取計算 |
 | app/engine/pdf_inspector.py | PDF 有效性與首頁題型證據；受大小、時間限制 |
 | app/engine/path_builder.py | 純路徑計算、模板驗證、清理與碰撞方案，不下載 |
-| app/engine/downloader.py | 串流暫存、驗證、歸檔與附件重試 |
-| app/engine/task_service.py | 任務狀態、取消、進度、工作池與 UI 提交去重 |
+| app/engine/downloader.py | 串流暫存、驗證、歸檔與附件重試；可被多執行緒呼叫，需執行緒安全 |
+| app/engine/task_service.py | 任務狀態、取消、進度、執行緒池派送（查詢串行／下載併發）與 UI 提交去重 |
 | app/storage/manifest.py | SQLite 快照、附件狀態、版本與啟動核對 |
 | app/ui/web_app.py | Streamlit 畫面與使用者輸入，不內嵌業務邏輯 |
 
@@ -88,13 +88,13 @@ ID 優先採官方識別碼；缺少時依 SPEC §4 產生穩定雜湊並標記�
 
 ## 4. 網路與解析規則
 
-- 全域同站最多 2 個在途請求，啟動間隔 0.5～1.5 秒；所有模組共用限速器。
-- WebForms 查詢在同一 Client 內串行，依最新頁面保留所有 hidden fields，包含分段 ViewState；事件、控制項及分頁參數必須經 fixture 驗證。
+- 全域同站在途請求上限預設 2（可設定 1～4），啟動間隔 0.5～1.5 秒；所有模組共用同一個限速器與計時節奏，worker 不各自計時。查詢事件在同一 Session 內串行，下載階段可用執行緒池併發，但每次請求仍須通過共用限速器。不得宣稱特定併發數保證不被 WAF 封鎖；429／503 依 Retry-After 退避，403 停止對該來源的新請求並記錄原因，不當作限流重試。
+- WebForms 查詢在同一 Client 內串行，依最新頁面保留所有 hidden fields，包含分段 ViewState；事件與控制項參數必須經 fixture 驗證。此站點**無分頁**，不得實作不存在的分頁事件；下拉選單變更（如年度迄）必須以 `__EVENTTARGET` 觸發 postback，否則變更不生效。
 - 網路 Client 不跨工作執行緒共享可變表單／Cookie 狀態。下載如需 Cookie，從已確認的 Session 快照建立獨立 Client。
 - 依 SPEC §7 實作逾時、重試、Retry-After、Session 重建及網域／重新導向驗證。
-- 解析器必須區分無結果、來源錯誤頁、結構變更與正常列表；不可將解析失敗當作空結果。
+- 解析器必須區分無結果、來源錯誤頁（含以 HTTP 200 回傳的錯誤頁）、結構變更與正常列表；不可將解析失敗當作空結果。類科列可能以 `label`+checkbox 或無 checkbox 的 `span` 呈現，兩者皆需支援。
 - HTML 編碼依回應標頭、頁面宣告及已驗證的來源規則處理，保留診斷資訊；內部統一 Unicode，輸出文字檔採 UTF-8。不得以忽略解碼錯誤悄悄破壞官方名稱。
-- 查詢進度與完整性分開；達上限、分頁失敗或迴圈時依 SPEC 禁止從不完整快照批量下載。
+- 查詢進度與完整性分開；以年度為批次單位（官方單次上限 6,000 筆，超過時只回提示文字且無結果列），嚴重時依 SPEC 禁止從不完整快照批量下載。完整性採官方統計與實際列數雙軌核對，不一致時保留兩個數字並標示未完整。
 
 ## 5. 題型判定規則
 
@@ -105,6 +105,8 @@ pdf_inspector 只抽取首頁，檢查前 300 字元，不以文字抽取順序�
 規則優先明確混合證據；純題型須有排他證據。「單一選擇題」或「未找到測驗規範」不能單獨證明純題型。衝突、掃描、失敗或未知格式依 SPEC §4.1 降級並保存原因，不使用裸 except/pass 吞掉問題。
 
 未知題型命名為「試題」；答案必須為「測驗答案」。一筆考科可有多份試題附件；答案配對依來源關聯，不按字串相似度猜測。
+
+來源的「更正答案」（`t=M`）屬測驗答案角色但與原答案並存；兩者須各自保留並以穩定附件 ID 消歧，不得合併、覆寫或視為新考科。
 
 ## 6. 路徑、下載與持久化
 
@@ -117,6 +119,8 @@ path_builder 提供路徑計算與安全檢查；downloader 寫入前再次解�
 SQLite 寫入使用短交易並序列化狀態更新；不在網路等待期間持有交易。不得僅憑非零大小、同名或 URL 相同宣稱完成。略過須比對 manifest、大小與 SHA-256。
 
 更新檢查、版本保留、取消、附件大小上限、恢復與部分完成語意均依 SPEC §6–7。MVP 恢復為附件層級重試，不宣稱 HTTP Range 續傳。
+
+併發下載時，downloader 不共享可變的 HTTP Client／Cookie 狀態（必要時由已確認的 Session 快照各自建立 Client），manifest 寫入以短交易序列化，且不得在持有交易或鎖的期間等待網路 I/O。派送採有界方式，每個 future 獨立捕捉例外；驗證與歸檔完成才計入成功數。
 
 ## 7. UI 與可觀測性
 
@@ -132,7 +136,7 @@ Streamlit 重跑不可重複啟動任務；以任務 ID 與快照 ID 綁定背�
 
 必要驗證：
 
-1. 分頁去重、末頁、迴圈、官方總筆數核對、結果上限與 Session 失效重建。
+1. 年度批次合併去重、重複列去重（同列渲染兩次）、官方統計核對、官方 6,000 筆上限、統計不符與 Session 失效重建。
 2. 多欄 AND、同欄 OR、正規化、簡稱回退、可見項目選取、候選份數及零選取。
 3. 多附件拆卷、共用 URL、缺少答案、UNKNOWN、衝突、掃描 PDF、只讀首頁與嗅探逾時。
 4. A／B／C／D 模板、年度格式、未知變數、目錄逃逸、保留名稱、清理碰撞及長路徑。
