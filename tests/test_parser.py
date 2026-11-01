@@ -129,18 +129,18 @@ def test_years_and_compact_keys(sample_page) -> None:
         assert record.subject_key == compact_key(record.subject)
 
 
-def test_stats_mismatch_marks_incomplete(html_dir: pathlib.Path) -> None:
-    """官方統計與實際列數不符時標示未完整，並保留兩個數字。"""
+def test_stats_mismatch_is_complete_with_warning(html_dir: pathlib.Path) -> None:
+    """只有統計文字與列數不一致時：仍屬可用快照，但保留警告與兩組數字。"""
     page = parse_result_page(
         (html_dir / "result_stats_mismatch.html").read_text(encoding="utf-8"),
         observed_at=OBSERVED_AT,
     )
-    assert page.status is ParseStatus.INCOMPLETE
-    assert page.is_complete is False
+    assert page.status is ParseStatus.OK_WITH_DIFF
+    assert page.is_complete is True
     assert page.official_counts is not None
     assert page.official_counts.subjects == page.parsed_counts.subjects + 3
     assert any("統計不符" in warning for warning in page.warnings)
-    assert "未完整" in page.message
+    assert "差異" in page.message
 
 
 def test_no_result_page(html_dir: pathlib.Path) -> None:

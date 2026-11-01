@@ -48,10 +48,13 @@ class AssetScope(str, Enum):
 class ParseStatus(str, Enum):
     """單次查詢頁面的解析結果分類。
 
-    OK 以外的狀態都必須保留原始診斷資訊，且不得在下游被當成「零結果」。
+    OK_WITH_DIFF 代表官方統計文字與實際渲染列數不一致，但差異只出現在統計，
+    沒有解析失敗、上限或錯誤頁；依 SPEC 允許下載並標示差異。
+    其餘非 OK 狀態都必須保留診斷資訊，且不得在下游被當成「零結果」。
     """
 
     OK = "完整"
+    OK_WITH_DIFF = "完整（統計差異）"
     NO_RESULT = "無結果"
     LIMIT_EXCEEDED = "結果過大"
     INCOMPLETE = "結果未完整"
@@ -68,6 +71,42 @@ class TypeEvidence:
     reason: str
     rule_version: str
     conflicted: bool = False
+
+
+class AttachmentStatus(str, Enum):
+    """附件下載狀態（SPEC §7）。"""
+
+    PENDING = "待下載"
+    DOWNLOADING = "下載中"
+    VERIFYING = "驗證中"
+    COMPLETED = "已完成"
+    SKIPPED = "已略過"
+    FAILED = "失敗"
+    CANCELLED = "已取消"
+
+
+class TaskStatus(str, Enum):
+    """任務狀態（SPEC §7）。"""
+
+    PENDING = "待開始"
+    QUERYING = "查詢中"
+    SELECTING = "待勾選"
+    DOWNLOADING = "下載中"
+    CANCELLING = "取消中"
+    CANCELLED = "已取消"
+    COMPLETED = "完成"
+    PARTIAL = "部分完成"
+    FAILED = "失敗"
+
+    @property
+    def is_active(self) -> bool:
+        return self in (
+            TaskStatus.PENDING,
+            TaskStatus.QUERYING,
+            TaskStatus.SELECTING,
+            TaskStatus.DOWNLOADING,
+            TaskStatus.CANCELLING,
+        )
 
 
 class PdfStatus(str, Enum):
@@ -180,14 +219,16 @@ class ParsedPage:
 
     @property
     def is_complete(self) -> bool:
-        """是否可作為完整快照使用。"""
-        return self.status is ParseStatus.OK
+        """是否可作為完整快照使用（統計差異仍算完整，但會保留警告）。"""
+        return self.status in (ParseStatus.OK, ParseStatus.OK_WITH_DIFF)
 
     @property
     def message(self) -> str:
         """給使用者看的狀態說明。"""
         if self.status is ParseStatus.OK:
             return "查詢結果完整"
+        if self.status is ParseStatus.OK_WITH_DIFF:
+            return "查詢結果完整，但官方統計與實際列數有差異（已保留兩組數字）"
         if self.status is ParseStatus.NO_RESULT:
             return "查無符合條件的資料"
         if self.status is ParseStatus.LIMIT_EXCEEDED:
@@ -290,14 +331,16 @@ class QuerySnapshot:
 
     @property
     def is_complete(self) -> bool:
-        """未完整快照不得開放批量下載。"""
-        return self.status is ParseStatus.OK
+        """未完整快照不得開放批量下載（統計差異仍允許，但需顯示警告）。"""
+        return self.status in (ParseStatus.OK, ParseStatus.OK_WITH_DIFF)
 
     @property
     def message(self) -> str:
         """給使用者看的完整性說明。"""
         if self.status is ParseStatus.OK:
             return "查詢結果完整"
+        if self.status is ParseStatus.OK_WITH_DIFF:
+            return "查詢結果完整，但官方統計與實際列數有差異（已保留兩組數字）"
         if self.status is ParseStatus.NO_RESULT:
             return "查無符合條件的資料"
         if self.status is ParseStatus.LIMIT_EXCEEDED:

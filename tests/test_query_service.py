@@ -99,14 +99,16 @@ def test_limit_exceeded_snapshot_is_incomplete(store, html_dir) -> None:
     assert snapshot.records == ()
 
 
-def test_stats_mismatch_snapshot_is_incomplete(store, html_dir) -> None:
+def test_stats_mismatch_snapshot_is_complete_with_warning(store, html_dir) -> None:
+    """統計差異不阻擋下載，但狀態與警告必須保留。"""
     client = StubClient({113: (html_dir / "result_stats_mismatch.html").read_text(encoding="utf-8")})
     service = QueryService(client, store)
 
     snapshot = service.query(QuerySpec(113, 113))
 
-    assert snapshot.status is ParseStatus.INCOMPLETE
-    assert any("統計不符" in warning for warning in snapshot.warnings)
+    assert snapshot.status is ParseStatus.OK_WITH_DIFF
+    assert snapshot.is_complete is True
+    assert any("統計不符" in warning or "差異" in warning for warning in snapshot.warnings)
 
 
 def test_all_years_no_result(store, html_dir) -> None:

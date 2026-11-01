@@ -419,13 +419,24 @@ def parse_result_page(
             or parsed_counts.categories != official_counts.categories
             or parsed_counts.subjects != official_counts.subjects
         ):
-            base_status = ParseStatus.INCOMPLETE
-            warnings.append(
-                "統計不符：官方 "
-                f"{official_counts.exams}/{official_counts.categories}/{official_counts.subjects}"
-                "；實際解析 "
-                f"{parsed_counts.exams}/{parsed_counts.categories}/{parsed_counts.subjects}"
-            )
+            # 只有統計文字與列數不一致，沒有結構或上限問題：仍屬可用快照。
+            # 但若合併過重複列才造成短少，代表欄位結構異常，維持「未完整」。
+            if parsed_counts.duplicate_rows > 0:
+                base_status = ParseStatus.INCOMPLETE
+                warnings.append(
+                    "重複列合併後筆數與統計不符：官方 "
+                    f"{official_counts.exams}/{official_counts.categories}/{official_counts.subjects}"
+                    "；實際解析 "
+                    f"{parsed_counts.exams}/{parsed_counts.categories}/{parsed_counts.subjects}"
+                )
+            else:
+                base_status = ParseStatus.OK_WITH_DIFF
+                warnings.append(
+                    "統計不符：官方 "
+                    f"{official_counts.exams}/{official_counts.categories}/{official_counts.subjects}"
+                    "；實際解析 "
+                    f"{parsed_counts.exams}/{parsed_counts.categories}/{parsed_counts.subjects}"
+                )
     if base_status is ParseStatus.NO_RESULT and parsed_counts.subjects > 0:
         base_status = ParseStatus.STRUCTURE_CHANGED
         warnings.append("統計顯示查無結果，但表格仍有考科列")

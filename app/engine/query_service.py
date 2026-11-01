@@ -215,21 +215,33 @@ class QueryService:
             messages.append(f"部分年度未完整：{failed}")
         elif statuses == {ParseStatus.NO_RESULT}:
             status = ParseStatus.NO_RESULT
+        elif ParseStatus.OK_WITH_DIFF in statuses:
+            status = ParseStatus.OK_WITH_DIFF
+            messages.append("部分年度的官方統計與實際列數不一致，已保留兩組數字")
         else:
             status = ParseStatus.OK
 
-        if status is ParseStatus.OK and totals_official is not None:
+        if status in (ParseStatus.OK, ParseStatus.OK_WITH_DIFF) and totals_official is not None:
             if (
                 totals_official.exams != totals_parsed.exams
                 or totals_official.categories != totals_parsed.categories
                 or totals_official.subjects != totals_parsed.subjects
             ):
-                status = ParseStatus.INCOMPLETE
-                messages.append(
-                    "合計統計不符：官方 "
-                    f"{totals_official.exams}/{totals_official.categories}/{totals_official.subjects}"
-                    "；解析 "
-                    f"{totals_parsed.exams}/{totals_parsed.categories}/{totals_parsed.subjects}"
-                )
+                if status is ParseStatus.OK:
+                    # 每年都精確、合併後卻對不上：屬於去重或重複批次異常
+                    status = ParseStatus.INCOMPLETE
+                    messages.append(
+                        "合併後筆數與統計不符（可能有重複批次）：官方 "
+                        f"{totals_official.exams}/{totals_official.categories}/"
+                        f"{totals_official.subjects}；解析 "
+                        f"{totals_parsed.exams}/{totals_parsed.categories}/{totals_parsed.subjects}"
+                    )
+                else:
+                    messages.append(
+                        "合計統計差異：官方 "
+                        f"{totals_official.exams}/{totals_official.categories}/{totals_official.subjects}"
+                        "；解析 "
+                        f"{totals_parsed.exams}/{totals_parsed.categories}/{totals_parsed.subjects}"
+                    )
 
         return status, totals_official, totals_parsed, messages

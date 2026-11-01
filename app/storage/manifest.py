@@ -6,10 +6,11 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 from contextlib import contextmanager
-from dataclasses import asdict, replace
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterator
@@ -17,6 +18,7 @@ from typing import Iterator
 from app.models import (
     AssetRole,
     AssetScope,
+    AttachmentStatus,
     ExamAsset,
     ExamRecord,
     OfficialCounts,
@@ -75,6 +77,38 @@ CREATE TABLE IF NOT EXISTS snapshot_years (
     stats_text    TEXT NOT NULL,
     warnings_json TEXT NOT NULL,
     PRIMARY KEY (snapshot_id, year)
+);
+
+CREATE TABLE IF NOT EXISTS attachments (
+    asset_id      TEXT PRIMARY KEY,
+    snapshot_id   TEXT NOT NULL,
+    record_id     TEXT NOT NULL,
+    url           TEXT NOT NULL,
+    role          TEXT NOT NULL,
+    status        TEXT NOT NULL,
+    path          TEXT,
+    size          INTEGER,
+    sha256        TEXT,
+    etag          TEXT,
+    last_modified TEXT,
+    question_type TEXT,
+    version       INTEGER NOT NULL DEFAULT 1,
+    error_code    TEXT,
+    error_message TEXT,
+    updated_at    TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_attachments_record ON attachments (record_id);
+CREATE INDEX IF NOT EXISTS idx_attachments_snapshot ON attachments (snapshot_id);
+
+CREATE TABLE IF NOT EXISTS attachment_versions (
+    asset_id    TEXT NOT NULL,
+    version     INTEGER NOT NULL,
+    path        TEXT NOT NULL,
+    sha256      TEXT NOT NULL,
+    size        INTEGER NOT NULL,
+    archived_at TEXT NOT NULL,
+    PRIMARY KEY (asset_id, version)
 );
 """
 
@@ -300,6 +334,273 @@ class ManifestStore:
     def count_snapshots(self) -> int:
         with self._connection() as conn:
             return int(conn.execute("SELECT COUNT(*) FROM snapshots").fetchone()[0])
+
+    # --- 附件狀態 -----------------------------------------------------
+    def get_attachment(self, asset_id: str) -> AttachmentRow | None:
+        with self._connection() as conn:
+            row = conn.execute(
+                "SELECT * FROM attachments WHERE asset_id = ?", (asset_id,)
+            ).fetchone()
+        return _attachment_from_row(row) if row else None
+
+    def list_attachments(
+        self, *, snapshot_id: str | None = None, status: AttachmentStatus | None = None
+    ) -> tuple[AttachmentRow, ...]:
+        query = "SELECT * FROM attachments"
+        clauses: list[str] = []
+        params: list[str] = []
+        if snapshot_id is not None:
+            clauses.append("snapshot_id = ?")
+            params.append(snapshot_id)
+        if status is not None:
+            clauses.append("status = ?")
+            params.append(status.value)
+        if clauses:
+            query += " WHERE " + " AND ".join(clauses)
+        query += " ORDER BY record_id, asset_id"
+        with self._connection() as conn:
+            rows = conn.execute(query, params).fetchall()
+        return tuple(_attachment_from_row(row) for row in rows)
+
+    def mark_attachment_started(
+        self, *, asset_id: str, snapshot_id: str, record_id: str, url: str, role: str
+    ) -> None:
+        """記錄下載開始（短交易）。"""
+        with self._connection() as conn:
+            conn.execute(
+                "INSERT INTO attachments ("
+                " asset_id, snapshot_id, record_id, url, role, status, updated_at"
+                ") VALUES (?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(asset_id) DO UPDATE SET"
+                " snapshot_id = excluded.snapshot_id,"
+                " record_id = excluded.record_id,"
+                " url = excluded.url,"
+                " role = excluded.role,"
+                " status = excluded.status,"
+                " error_code = NULL,"
+                " error_message = NULL,"
+                " updated_at = excluded.updated_at",
+                (
+                    asset_id,
+                    snapshot_id,
+                    record_id,
+                    url,
+                    role,
+                    AttachmentStatus.DOWNLOADING.value,
+                    _now_iso(),
+                ),
+            )
+
+    def begin_attachment_verify(
+        self, *, asset_id: str, path: str, sha256: str, size: int, version: int
+    ) -> None:
+        """歸檔前的意圖記錄：檔名、雜湊與版本，供啟動核對修復中斷。"""
+        with self._connection() as conn:
+            conn.execute(
+                "UPDATE attachments SET status = ?, path = ?, sha256 = ?, size = ?,"
+                " version = ?, updated_at = ? WHERE asset_id = ?",
+                (
+                    AttachmentStatus.VERIFYING.value,
+                    path,
+                    sha256,
+                    size,
+                    version,
+                    _now_iso(),
+                    asset_id,
+                ),
+            )
+
+    def complete_attachment(
+        self,
+        *,
+        asset_id: str,
+        path: str,
+        sha256: str,
+        size: int,
+        version: int,
+        etag: str | None = None,
+        last_modified: str | None = None,
+        question_type: str | None = None,
+        status: AttachmentStatus = AttachmentStatus.COMPLETED,
+    ) -> None:
+        """標記完成（含已略過），並寫入版本紀錄。"""
+        timestamp = _now_iso()
+        with self._connection() as conn:
+            conn.execute("BEGIN")
+            try:
+                conn.execute(
+                    "UPDATE attachments SET status = ?, path = ?, sha256 = ?, size = ?,"
+                    " version = ?, etag = ?, last_modified = ?, question_type = ?,"
+                    " error_code = NULL, error_message = NULL, updated_at = ?"
+                    " WHERE asset_id = ?",
+                    (
+                        status.value,
+                        path,
+                        sha256,
+                        size,
+                        version,
+                        etag,
+                        last_modified,
+                        question_type,
+                        timestamp,
+                        asset_id,
+                    ),
+                )
+                conn.execute(
+                    "INSERT INTO attachment_versions ("
+                    " asset_id, version, path, sha256, size, archived_at"
+                    ") VALUES (?, ?, ?, ?, ?, ?) "
+                    "ON CONFLICT(asset_id, version) DO UPDATE SET"
+                    " path = excluded.path, sha256 = excluded.sha256,"
+                    " size = excluded.size, archived_at = excluded.archived_at",
+                    (asset_id, version, path, sha256, size, timestamp),
+                )
+                conn.execute("COMMIT")
+            except Exception:
+                conn.execute("ROLLBACK")
+                raise
+
+    def fail_attachment(
+        self, *, asset_id: str, error_code: str, error_message: str,
+        status: AttachmentStatus = AttachmentStatus.FAILED,
+    ) -> None:
+        with self._connection() as conn:
+            conn.execute(
+                "UPDATE attachments SET status = ?, error_code = ?, error_message = ?,"
+                " updated_at = ? WHERE asset_id = ?",
+                (status.value, error_code, error_message, _now_iso(), asset_id),
+            )
+
+    def attachment_versions(self, asset_id: str) -> tuple[dict[str, object], ...]:
+        with self._connection() as conn:
+            rows = conn.execute(
+                "SELECT * FROM attachment_versions WHERE asset_id = ? ORDER BY version",
+                (asset_id,),
+            ).fetchall()
+        return tuple(dict(row) for row in rows)
+
+    def reconcile(self, root: str | Path) -> ReconcileReport:
+        """啟動核對：修復歸檔成功但狀態未提交、清理殘留暫存檔。"""
+        base = Path(root)
+        adopted: list[str] = []
+        interrupted: list[str] = []
+        removed_parts: list[str] = []
+
+        pending = tuple(
+            row
+            for row in self.list_attachments()
+            if row.status in (AttachmentStatus.DOWNLOADING, AttachmentStatus.VERIFYING)
+        )
+        for row in pending:
+            target = base / row.path if row.path else None
+            if target is not None and target.is_file() and row.sha256:
+                if _file_sha256(target) == row.sha256 and target.stat().st_size == (row.size or 0):
+                    self.complete_attachment(
+                        asset_id=row.asset_id,
+                        path=row.path or "",
+                        sha256=row.sha256,
+                        size=row.size or 0,
+                        version=row.version,
+                    )
+                    adopted.append(row.asset_id)
+                    continue
+            self.fail_attachment(
+                asset_id=row.asset_id,
+                error_code="interrupted",
+                error_message="下載或歸檔中斷，需重新下載",
+            )
+            interrupted.append(row.asset_id)
+
+        parts_dir = base / PARTS_DIRNAME
+        if parts_dir.is_dir():
+            for part in parts_dir.glob("*.part"):
+                try:
+                    part.unlink()
+                    removed_parts.append(part.name)
+                except OSError:
+                    pass
+
+        tracked = {
+            str((base / row.path).resolve()).casefold()
+            for row in self.list_attachments()
+            if row.path
+        }
+        untracked: list[str] = []
+        if base.is_dir():
+            for candidate in base.rglob("*.pdf"):
+                if str(candidate.resolve()).casefold() not in tracked:
+                    untracked.append(str(candidate.relative_to(base)).replace("\\", "/"))
+
+        return ReconcileReport(
+            adopted=tuple(adopted),
+            interrupted=tuple(interrupted),
+            removed_parts=tuple(removed_parts),
+            untracked_pdfs=tuple(sorted(untracked)),
+        )
+
+
+PARTS_DIRNAME = ".parts"
+
+
+@dataclass(frozen=True)
+class AttachmentRow:
+    """manifest 中的附件狀態。"""
+
+    asset_id: str
+    snapshot_id: str
+    record_id: str
+    url: str
+    role: str
+    status: AttachmentStatus
+    path: str | None
+    size: int | None
+    sha256: str | None
+    etag: str | None
+    last_modified: str | None
+    version: int
+    error_code: str | None
+    error_message: str | None
+    updated_at: str
+    question_type: str | None = None
+
+
+@dataclass(frozen=True)
+class ReconcileReport:
+    """啟動核對結果。"""
+
+    adopted: tuple[str, ...] = ()
+    interrupted: tuple[str, ...] = ()
+    removed_parts: tuple[str, ...] = ()
+    untracked_pdfs: tuple[str, ...] = ()
+
+
+def _attachment_from_row(row) -> AttachmentRow:
+    return AttachmentRow(
+        asset_id=row["asset_id"],
+        snapshot_id=row["snapshot_id"],
+        record_id=row["record_id"],
+        url=row["url"],
+        role=row["role"],
+        status=AttachmentStatus(row["status"]),
+        path=row["path"],
+        size=row["size"],
+        sha256=row["sha256"],
+        etag=row["etag"],
+        last_modified=row["last_modified"],
+        version=int(row["version"]),
+        error_code=row["error_code"],
+        error_message=row["error_message"],
+        updated_at=row["updated_at"],
+        question_type=row["question_type"],
+    )
+
+
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(65536), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _aggregate_counts(snapshot: QuerySnapshot) -> dict[str, OfficialCounts | ParsedCounts | None]:
