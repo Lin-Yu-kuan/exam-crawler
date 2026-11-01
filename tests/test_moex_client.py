@@ -10,6 +10,13 @@ import pytest
 from conftest import FakeMoexServer
 
 from app.crawler.moex_client import (
+    BTN_QUERY,
+    BTN_SEARCH,
+    CATEGORY_KEYWORD_CONTROL,
+    DISPLAY_MODE_CONTROL,
+    EXAM_KEYWORD_CONTROL,
+    IBTN_FULL,
+    SUBJECT_KEYWORD_CONTROL,
     AccessDenied,
     BlockedHost,
     MoexClient,
@@ -182,3 +189,65 @@ def test_non_whitelisted_start_url_is_blocked(server) -> None:
         with pytest.raises(BlockedHost):
             client.fetch_form()
     assert server.requests == []
+
+
+# --- 進階查詢（類科／科目關鍵字） --------------------------------------
+
+
+def test_advanced_search_sends_keywords_with_btn_query(server) -> None:
+    with make_client(server) as client:
+        client.search(year_roc=113, keywords=("", "一般行政", "行政法"))
+
+    posts = server.posts()
+    full_posts = [post for post in posts if IBTN_FULL in form_data(post)]
+    query_posts = [post for post in posts if BTN_QUERY in form_data(post)]
+    assert len(full_posts) == 1, "應先切換到進階查詢"
+    assert len(query_posts) == 1
+
+    data = form_data(query_posts[0])
+    assert data[CATEGORY_KEYWORD_CONTROL] == ["一般行政"]
+    assert data[SUBJECT_KEYWORD_CONTROL] == ["行政法"]
+    assert EXAM_KEYWORD_CONTROL not in data, "空白關鍵字不得送出"
+    assert data[DISPLAY_MODE_CONTROL] == ["0"]
+    assert BTN_SEARCH not in data
+
+
+def test_advanced_mode_is_reused_across_years(server) -> None:
+    with make_client(server) as client:
+        client.search(year_roc=113, keywords=("", "", "行政法"))
+        client.search(year_roc=114, keywords=("", "", "行政法"))
+
+    assert len(search_page_gets(server)) == 1, "同一組關鍵字只需切換一次"
+    assert len([post for post in server.posts() if IBTN_FULL in form_data(post)]) == 1
+    assert len([post for post in server.posts() if BTN_QUERY in form_data(post)]) == 2
+
+
+def test_changing_keywords_reenters_advanced(server) -> None:
+    with make_client(server) as client:
+        client.search(year_roc=113, keywords=("", "", "行政法"))
+        client.search(year_roc=114, keywords=("", "", "政治學"))
+
+    assert len(search_page_gets(server)) == 2
+    assert len([post for post in server.posts() if IBTN_FULL in form_data(post)]) == 2
+    second_query = [post for post in server.posts() if BTN_QUERY in form_data(post)][-1]
+    assert form_data(second_query)[SUBJECT_KEYWORD_CONTROL] == ["政治學"]
+
+
+def test_switching_back_to_simple_query(server) -> None:
+    with make_client(server) as client:
+        client.search(year_roc=113, keywords=("", "", "行政法"))
+        client.search(year_roc=114)
+
+    assert len(search_page_gets(server)) == 2, "離開進階模式需重新取得簡易表單"
+    last = server.posts()[-1]
+    assert BTN_SEARCH in form_data(last)
+    assert SUBJECT_KEYWORD_CONTROL not in form_data(last)
+
+
+def test_advanced_search_rebuilds_session_on_error_page(server) -> None:
+    server.error_first_search = True
+    with make_client(server) as client:
+        client.search(year_roc=113, keywords=("", "", "行政法"))
+
+    assert len(search_page_gets(server)) == 2
+    assert len([post for post in server.posts() if IBTN_FULL in form_data(post)]) == 2

@@ -42,6 +42,53 @@ def test_web_app_delegates_business_logic_to_controller() -> None:
     assert "selection_stats(" not in source
 
 
+def test_query_form_has_category_and_subject_keyword_fields() -> None:
+    """第一階段要有考試名稱、類科、科目三個關鍵字欄位。"""
+    source = (ROOT / "app" / "ui" / "web_app.py").read_text(encoding="utf-8")
+
+    assert "考試名稱關鍵字" in source
+    assert "類科關鍵字" in source
+    assert "科目關鍵字" in source
+    assert "category_keyword=category_keyword.strip()" in source
+    assert "subject_keyword=subject_keyword.strip()" in source
+
+
+def test_candidate_ui_uses_chips_and_full_fetch() -> None:
+    """候選區塊要有 chips（可叉除）與清單加入；查詢表單要有兩個選項。"""
+    source = (ROOT / "app" / "ui" / "web_app.py").read_text(encoding="utf-8")
+
+    assert "不套用關鍵字，抓整年度全部考科" in source
+    assert "st.pills(" in source
+    assert 'selection_mode="multi"' in source
+    assert "_on_chips_change" in source
+    assert "_on_add_selection" in source
+    assert "MAX_CHIPS" in source
+    assert "載入更多" not in source, "分頁會讓瀏覽器端的搜尋找不到未載入項目"
+    assert "sel-{dimension}" not in source, "舊的單一多選清單應已移除"
+
+
+def test_query_form_wording_matches_user_feedback() -> None:
+    """便條紙 #1–#4：說明文字移除、兩個選項白話化、按鈕改「開始過濾」。"""
+    source = (ROOT / "app" / "ui" / "web_app.py").read_text(encoding="utf-8")
+
+    assert "關鍵字會先送官方進階查詢" not in source, "#1 整段說明要拿掉"
+    assert "重新向官網下載（忽略今日快取）" in source, "#3 要白話"
+    assert "強制重新查詢" not in source
+    assert 'st.form_submit_button("開始過濾"' in source, "#4 按鈕改「開始過濾」"
+    assert "尚未取得資料。按「開始過濾」" in source
+    # 兩個勾選項都要有說明
+    assert source.count("help=(") >= 2
+
+
+def test_download_progress_separates_new_and_skipped() -> None:
+    """重跑時要分得出來「新下載」「共用」與「略過」，不能全部寫成完成。"""
+    source = (ROOT / "app" / "ui" / "web_app.py").read_text(encoding="utf-8")
+
+    assert "新下載 {state.completed - state.deduped}" in source
+    assert "共用 {state.deduped}" in source
+    assert "略過 {state.skipped}" in source
+
+
 def test_entry_point_uses_localhost() -> None:
     import main as entry
 

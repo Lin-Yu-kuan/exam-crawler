@@ -132,6 +132,7 @@ def test_successful_download_archives_and_records(tmp_path, store, sample_pdf) -
     assert row.status is AttachmentStatus.COMPLETED
     assert row.path == "科目/試題_試題.pdf"
     assert row.size == len(sample_pdf)
+    assert row.dedupe_of is None
     assert store.attachment_versions("a1")[0]["version"] == 1
 
 
@@ -145,6 +146,47 @@ def test_second_download_skips_without_request(tmp_path, store, sample_pdf) -> N
     assert again.skipped is True
     assert again.status is AttachmentStatus.SKIPPED
     assert len(server.requests) == 1
+
+
+def test_identical_content_shares_one_file(tmp_path, store, sample_pdf) -> None:
+    """不同網址但內容相同：只寫一份實體檔，第二筆紀錄指向同一路徑。"""
+    server = Server([pdf_response(sample_pdf), pdf_response(sample_pdf)])
+    downloader = make_downloader(tmp_path, store, server)
+
+    first = downloader.download(make_target("a1", "科目A/檔_試題.pdf"))
+    second = downloader.download(make_target("a2", "科目B/檔_試題.pdf"))
+
+    assert first.dedupe_of is None and first.shared is False
+    assert second.shared is True
+    assert second.dedupe_of == "a1"
+    assert second.relative_path == first.relative_path == "科目A/檔_試題.pdf"
+
+    pdfs = sorted((tmp_path / "downloads").rglob("*.pdf"))
+    assert len(pdfs) == 1, "相同內容不應重複寫入"
+
+    row = store.get_attachment("a2")
+    assert row is not None
+    assert row.status is AttachmentStatus.COMPLETED
+    assert row.path == "科目A/檔_試題.pdf"
+    assert row.dedupe_of == "a1"
+    assert row.sha256 == hashlib.sha256(sample_pdf).hexdigest()
+    assert not list((tmp_path / "downloads" / ".parts").glob("*.part"))
+
+
+def test_shared_file_missing_falls_back_to_own_path(tmp_path, store, sample_pdf) -> None:
+    """共用的檔案被刪除後，下一次下載要自己寫一份，不能指向不存在的路徑。"""
+    server = Server([pdf_response(sample_pdf), pdf_response(sample_pdf)])
+    downloader = make_downloader(tmp_path, store, server)
+
+    first = downloader.download(make_target("a1", "科目A/檔_試題.pdf"))
+    assert first.relative_path is not None
+    (tmp_path / "downloads" / "科目A" / "檔_試題.pdf").unlink()
+
+    second = downloader.download(make_target("a2", "科目B/檔_試題.pdf"))
+
+    assert second.shared is False
+    assert second.relative_path == "科目B/檔_試題.pdf"
+    assert (tmp_path / "downloads" / "科目B" / "檔_試題.pdf").is_file()
 
 
 def test_tampered_file_is_downloaded_again(tmp_path, store, sample_pdf) -> None:

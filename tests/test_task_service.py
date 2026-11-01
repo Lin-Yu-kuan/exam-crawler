@@ -16,6 +16,7 @@ from app.engine.task_service import (
     SnapshotIncompleteError,
     TaskNotFound,
     TaskService,
+    TaskState,
     TaskStateError,
 )
 from app.models import (
@@ -55,6 +56,7 @@ class FakeDownloader:
         self.question_types = question_types or {}
         self.calls: list[str] = []
         self.paths: dict[str, str] = {}
+        self.shared: dict[str, str] = {}
         self.active = 0
         self.peak = 0
         self._lock = threading.Lock()
@@ -125,12 +127,14 @@ class FakeDownloader:
                     _inspection(self.question_types.get(asset_id, QuestionType.UNKNOWN))
                 )
             self.paths[asset_id] = relative
+            shared_with = self.shared.get(asset_id)
             result = DownloadResult(
                 asset_id=asset_id,
                 status=AttachmentStatus.COMPLETED,
                 relative_path=relative,
                 size_bytes=10,
                 sha256="0" * 64,
+                dedupe_of=shared_with,
             )
             self._finish(target, result)
             return result
@@ -209,6 +213,25 @@ def test_complete_flow(tmp_path, store, records) -> None:
     assert len(downloader.calls) == 4
     assert final.message.startswith("全部完成")
     assert any(event.kind == "finished" for event in final.events)
+
+
+def test_shared_content_is_counted_separately(tmp_path, store, records) -> None:
+    """內容相同的附件要標示為「共用」，不計入新下載。"""
+    snapshot = make_snapshot(records)
+    frozen = freeze_selection(records, snapshot_id=snapshot.snapshot_id)
+    downloader = FakeDownloader(store=store)
+    service = make_service(tmp_path, store, downloader)
+    asset_ids = [asset.asset_id for record in records for asset in record.assets]
+    downloader.shared = {asset_ids[1]: asset_ids[0]}
+
+    state = service.submit(snapshot, frozen)
+    final = service.wait(state.task_id)
+
+    assert final.status is TaskStatus.COMPLETED
+    assert final.deduped == 1
+    assert final.completed == 4
+    assert "共用檔案" in final.message
+    assert any("共用檔案" in event.message for event in final.events)
 
 
 def test_incomplete_snapshot_blocks_download(tmp_path, store, records) -> None:
@@ -437,6 +460,29 @@ def test_unknown_task_raises(tmp_path, store) -> None:
     service = make_service(tmp_path, store, FakeDownloader(store=store))
     with pytest.raises(TaskNotFound):
         service.get("missing")
+
+
+def test_completed_message_reports_skipped_files() -> None:
+    """重跑時全部略過也要說清楚，避免誤以為又下載了一次。"""
+    base = dict(
+        task_id="task-1",
+        snapshot_id="snap-1",
+        status=TaskStatus.COMPLETED,
+        attempt=1,
+        total=3,
+        completed=0,
+        skipped=3,
+        deduped=0,
+        failed=0,
+        cancelled=0,
+        pending=0,
+        started_at=None,
+        finished_at=None,
+    )
+
+    assert "略過 3" in TaskState(**base).message
+    assert "共用" in TaskState(**{**base, "skipped": 0, "completed": 3, "deduped": 3}).message
+    assert TaskState(**{**base, "completed": 3, "skipped": 0}).message == "全部完成（3/3）"
 
 
 def test_service_does_not_import_ui() -> None:

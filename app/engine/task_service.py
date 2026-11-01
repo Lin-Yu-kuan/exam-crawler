@@ -96,6 +96,7 @@ class TaskState:
     total: int
     completed: int
     skipped: int
+    deduped: int
     failed: int
     cancelled: int
     pending: int
@@ -116,6 +117,13 @@ class TaskState:
     @property
     def message(self) -> str:
         if self.status is TaskStatus.COMPLETED:
+            if self.skipped or self.deduped:
+                extras: list[str] = []
+                if self.deduped:
+                    extras.append(f"{self.deduped} 個與既有檔案內容相同（共用檔案）")
+                if self.skipped:
+                    extras.append(f"略過 {self.skipped} 個已存在檔案")
+                return f"全部完成（{self.done}/{self.total}，其中 {'、'.join(extras)}）"
             return f"全部完成（{self.done}/{self.total}）"
         if self.status is TaskStatus.PARTIAL:
             return f"部分完成（成功 {self.done}，失敗 {self.failed}，取消 {self.cancelled}）"
@@ -147,6 +155,7 @@ class _Task:
     finished_at: str | None = None
     completed: int = 0
     skipped: int = 0
+    deduped: int = 0
     failed: int = 0
     cancelled: int = 0
     events: list[TaskEvent] = field(default_factory=list)
@@ -169,6 +178,7 @@ class _Task:
             total=len(self.targets),
             completed=self.completed,
             skipped=self.skipped,
+            deduped=self.deduped,
             failed=self.failed,
             cancelled=self.cancelled,
             pending=self.pending,
@@ -289,6 +299,7 @@ class TaskService:
             task.status = TaskStatus.PENDING
             task.cancel_requested = False
             task.completed = task.skipped = task.failed = task.cancelled = 0
+            task.deduped = 0
             task.failures.clear()
             task.finished_at = None
             task.reserved = {
@@ -485,6 +496,8 @@ class TaskService:
                 task.skipped += 1
             elif result.status is AttachmentStatus.COMPLETED:
                 task.completed += 1
+                if result.shared:
+                    task.deduped += 1
             elif result.status is AttachmentStatus.CANCELLED:
                 task.cancelled += 1
             else:
@@ -496,7 +509,10 @@ class TaskService:
                 TaskEvent(
                     at=_now_iso(),
                     kind=result.status.value,
-                    message=f"{result.status.value}：{result.relative_path or result.error_message or ''}",
+                    message=(
+                        f"{result.status.value}：{result.relative_path or result.error_message or ''}"
+                        f"{'（內容相同，共用檔案）' if result.shared else ''}"
+                    ),
                     asset_id=result.asset_id,
                 )
             )

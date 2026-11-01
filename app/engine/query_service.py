@@ -9,7 +9,9 @@ from dataclasses import replace
 from datetime import datetime, timezone
 from typing import Callable, Protocol
 
+from app.crawler.moex_client import SourceError
 from app.crawler.parser import RULE_VERSION, parse_result_page
+from app.engine.filter import records_matching_keywords
 from app.models import (
     SOURCE_PAGE,
     ExamRecord,
@@ -38,7 +40,13 @@ class QueryCancelled(Exception):
 class SearchClient(Protocol):
     """QueryService 需要的客戶端介面（便於以模擬物件測試）。"""
 
-    def search(self, *, year_roc: int, exam_code: str = "") -> str:  # pragma: no cover - 介面
+    def search(  # pragma: no cover - 介面
+        self,
+        *,
+        year_roc: int,
+        exam_code: str = "",
+        keywords: tuple[str, str, str] | None = None,
+    ) -> str:
         ...
 
 
@@ -114,12 +122,41 @@ class QueryService:
         records: dict[str, ExamRecord] = {}
         diagnostics: list[YearDiagnostics] = []
         warnings: list[str] = []
+        expected_records = 0
+
+        keywords = (
+            spec.exam_name_keyword.strip(),
+            spec.category_keyword.strip(),
+            spec.subject_keyword.strip(),
+        )
+        use_keywords = any(keywords)
+        advanced = use_keywords
 
         for index, year in enumerate(years, start=1):
             if should_cancel is not None and should_cancel():
                 raise QueryCancelled()
 
-            html = self._client.search(year_roc=year, exam_code=spec.exam_code)
+            try:
+                html = self._client.search(
+                    year_roc=year,
+                    exam_code=spec.exam_code,
+                    keywords=keywords if advanced else None,
+                )
+            except SourceError as exc:
+                # 進階查詢在第一批就失敗時，整批改用簡易查詢＋本機過濾，
+                # 避免同一份快照混用兩種查詢範圍。
+                if advanced and index == 1:
+                    advanced = False
+                    reset = getattr(self._client, "reset", None)
+                    if callable(reset):
+                        reset()
+                    warnings.append(
+                        f"伺服端關鍵字查詢失敗（{exc}），已改用完整查詢並在本機過濾"
+                    )
+                    html = self._client.search(year_roc=year, exam_code=spec.exam_code)
+                else:
+                    raise
+
             page = parse_result_page(html, source_url=self._source_url)
 
             diagnostics.append(
@@ -134,7 +171,21 @@ class QueryService:
             )
             warnings.extend(f"{year} 年：{warning}" for warning in page.warnings)
 
-            for record in page.records:
+            page_records = page.records
+            if use_keywords:
+                filtered = records_matching_keywords(
+                    page_records,
+                    exam_name=keywords[0],
+                    category=keywords[1],
+                    subject=keywords[2],
+                )
+                if len(filtered) != len(page_records):
+                    warnings.append(
+                        f"{year} 年：本機關鍵字過濾 {len(page_records)} → {len(filtered)} 筆"
+                    )
+                page_records = filtered
+
+            for record in page_records:
                 existing = records.get(record.record_id)
                 if existing is None:
                     records[record.record_id] = record
@@ -146,13 +197,17 @@ class QueryService:
                 )
                 records[record.record_id] = replace(existing, assets=merged)
 
+            expected_records += len(page_records)
+
             if on_progress is not None:
                 on_progress(index, len(years), diagnostics[-1])
 
             if should_cancel is not None and should_cancel():
                 raise QueryCancelled()
 
-        status, totals_official, totals_parsed, extra_warnings = self._evaluate(diagnostics, records)
+        status, totals_official, totals_parsed, extra_warnings = self._evaluate(
+            diagnostics, records, expected_records
+        )
         warnings.extend(extra_warnings)
 
         acquired_at = _now(self._clock).isoformat(timespec="seconds")
@@ -174,14 +229,19 @@ class QueryService:
 
     @staticmethod
     def _evaluate(
-        diagnostics: list[YearDiagnostics], records: dict[str, ExamRecord]
+        diagnostics: list[YearDiagnostics],
+        records: dict[str, ExamRecord],
+        expected_records: int,
     ) -> tuple[ParseStatus, OfficialCounts | None, ParsedCounts, list[str]]:
         """彙總各年度狀態，決定整份快照是否完整。
 
-        統計核對以**合併去重後的紀錄數**為準，避免重複批次讓數字虚增。
+        兩層檢查：
+        1. 官方統計 vs 各年度解析結果（來源層級，差異屬「完整（統計差異）」）。
+        2. 合併後紀錄數 vs 各批次總和（工具層級，不符代表重複批次，屬「未完整」）。
         """
         messages: list[str] = []
         official_exams = official_categories = official_subjects = 0
+        parsed_exams = parsed_categories = parsed_subjects = 0
         has_official = False
         duplicate_rows = 0
 
@@ -191,6 +251,9 @@ class QueryService:
                 official_exams += diag.official.exams
                 official_categories += diag.official.categories
                 official_subjects += diag.official.subjects
+            parsed_exams += diag.parsed.exams
+            parsed_categories += diag.parsed.categories
+            parsed_subjects += diag.parsed.subjects
             duplicate_rows += diag.parsed.duplicate_rows
 
         totals_official = (
@@ -198,10 +261,11 @@ class QueryService:
             if has_official
             else None
         )
+        # 來源統計核對用「解析結果」而非「合併後紀錄」；兩者是不同層級的檢查
         totals_parsed = ParsedCounts(
-            exams=len({record.exam_name for record in records.values()}),
-            categories=len({(record.exam_name, record.category) for record in records.values()}),
-            subjects=len(records),
+            exams=parsed_exams,
+            categories=parsed_categories,
+            subjects=parsed_subjects,
             duplicate_rows=duplicate_rows,
         )
 
@@ -227,21 +291,19 @@ class QueryService:
                 or totals_official.categories != totals_parsed.categories
                 or totals_official.subjects != totals_parsed.subjects
             ):
-                if status is ParseStatus.OK:
-                    # 每年都精確、合併後卻對不上：屬於去重或重複批次異常
-                    status = ParseStatus.INCOMPLETE
-                    messages.append(
-                        "合併後筆數與統計不符（可能有重複批次）：官方 "
-                        f"{totals_official.exams}/{totals_official.categories}/"
-                        f"{totals_official.subjects}；解析 "
-                        f"{totals_parsed.exams}/{totals_parsed.categories}/{totals_parsed.subjects}"
-                    )
-                else:
-                    messages.append(
-                        "合計統計差異：官方 "
-                        f"{totals_official.exams}/{totals_official.categories}/{totals_official.subjects}"
-                        "；解析 "
-                        f"{totals_parsed.exams}/{totals_parsed.categories}/{totals_parsed.subjects}"
-                    )
+                status = ParseStatus.OK_WITH_DIFF
+                messages.append(
+                    "合計統計差異：官方 "
+                    f"{totals_official.exams}/{totals_official.categories}/{totals_official.subjects}"
+                    "；解析 "
+                    f"{totals_parsed.exams}/{totals_parsed.categories}/{totals_parsed.subjects}"
+                )
+
+        if status in (ParseStatus.OK, ParseStatus.OK_WITH_DIFF) and len(records) != expected_records:
+            # 合併後筆數與各批次總和不同：代表跨批次去重或重複批次，屬工具端異常
+            status = ParseStatus.INCOMPLETE
+            messages.append(
+                f"合併後紀錄數不符（可能有重複批次）：預期 {expected_records}，實際 {len(records)}"
+            )
 
         return status, totals_official, totals_parsed, messages

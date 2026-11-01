@@ -96,7 +96,11 @@ class DownloadTarget:
 
 @dataclass(frozen=True)
 class DownloadResult:
-    """單一下載結果；skipped 代表依 manifest 判定為已完成而省略。"""
+    """單一下載結果。
+
+    skipped 代表依 manifest 判定為已完成而省略；dedupe_of 代表內容與另一個附件
+    完全相同，因此共用同一個實體檔（沒有另外寫入）。
+    """
 
     asset_id: str
     status: AttachmentStatus
@@ -105,12 +109,17 @@ class DownloadResult:
     sha256: str | None = None
     version: int = 1
     skipped: bool = False
+    dedupe_of: str | None = None
     error_code: str | None = None
     error_message: str | None = None
 
     @property
     def is_success(self) -> bool:
         return self.status in (AttachmentStatus.COMPLETED, AttachmentStatus.SKIPPED)
+
+    @property
+    def shared(self) -> bool:
+        return self.dedupe_of is not None
 
 
 def _sha256_file(path: Path) -> str:
@@ -300,6 +309,38 @@ class Downloader:
                 )
 
             sha256 = digest.hexdigest()
+
+            shared = self._find_shared(sha256, asset.asset_id)
+            if shared is not None:
+                share_path, share_asset_id = shared
+                self._store.begin_attachment_verify(
+                    asset_id=asset.asset_id,
+                    path=share_path,
+                    sha256=sha256,
+                    size=written,
+                    version=1,
+                )
+                self._store.complete_attachment(
+                    asset_id=asset.asset_id,
+                    path=share_path,
+                    sha256=sha256,
+                    size=written,
+                    version=1,
+                    etag=etag,
+                    last_modified=last_modified,
+                    question_type=inspection.evidence.question_type.value,
+                    dedupe_of=share_asset_id,
+                )
+                return DownloadResult(
+                    asset_id=asset.asset_id,
+                    status=AttachmentStatus.COMPLETED,
+                    relative_path=share_path,
+                    size_bytes=written,
+                    sha256=sha256,
+                    version=1,
+                    dedupe_of=share_asset_id,
+                )
+
             if target.resolve_path is not None:
                 base_relative = target.resolve_path(inspection)
             elif self._path_resolver is not None:
@@ -349,6 +390,15 @@ class Downloader:
                     pass
 
     # --- 輔助 ---------------------------------------------------------
+    def _find_shared(self, sha256: str, asset_id: str) -> tuple[str, str] | None:
+        """若相同內容已歸檔且檔案完好，回傳 (相對路徑, 來源 asset_id)。"""
+        row = self._store.find_content_duplicate(sha256=sha256, exclude_asset_id=asset_id)
+        if row is None or not row.path:
+            return None
+        if not self._is_intact(row):
+            return None
+        return row.path, row.asset_id
+
     def _resolve_destination(
         self, target: DownloadTarget, sha256: str, base_relative: str | None = None
     ) -> tuple[str, int, bool]:

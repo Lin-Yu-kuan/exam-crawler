@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pathlib
+from dataclasses import replace
 
 import pytest
 
@@ -50,7 +51,7 @@ class FakeQueryService:
         if self.error is not None:
             raise self.error
         assert self.snapshot is not None
-        return self.snapshot
+        return replace(self.snapshot, spec=spec)
 
 
 class FakeTaskService:
@@ -73,6 +74,7 @@ class FakeTaskService:
             total=len(self.submissions[-1][1]) if self.submissions else 0,
             completed=0,
             skipped=0,
+            deduped=0,
             failed=0,
             cancelled=0,
             pending=0,
@@ -263,6 +265,20 @@ def test_preview_with_invalid_template_sets_error(html_dir) -> None:
     assert "路徑設定錯誤" in (controller.last_error or "")
 
 
+def test_preview_fingerprint_tracks_selection_and_mode(html_dir) -> None:
+    """選取、年度、歸檔模式或模板任一變動，預覽就必須失效。"""
+    controller, _, _ = make_controller(html_dir)
+    controller.query(QuerySpec(113, 113))
+    baseline = controller.preview_fingerprint(PathMode.A, None)
+
+    assert controller.preview_fingerprint(PathMode.A, None) == baseline
+    assert controller.preview_fingerprint(PathMode.B, None) != baseline
+    assert controller.preview_fingerprint(PathMode.D, "{科目}.pdf") != baseline
+
+    controller.set_selection("subjects", ("國文",))
+    assert controller.preview_fingerprint(PathMode.A, None) != baseline
+
+
 # --- 任務：重複點擊、取消、重試 ----------------------------------------
 
 
@@ -290,6 +306,87 @@ def test_cancel_and_retry_delegate(html_dir) -> None:
     tasks.status = TaskStatus.PARTIAL
     retried = controller.retry()
     assert retried is not None and tasks.retried == 1
+
+
+def test_query_scope_text_includes_keywords(html_dir) -> None:
+    """查詢範圍應顯示年度與已套用的類科／科目關鍵字。"""
+    controller, _, _ = make_controller(html_dir)
+
+    controller.query(
+        QuerySpec(112, 113, category_keyword="一般行政", subject_keyword="國文")
+    )
+    scope = controller.query_scope_text()
+
+    assert "年度 112–113" in scope
+    assert "類科含「一般行政」" in scope
+    assert "科目含「國文」" in scope
+
+
+def test_query_scope_text_without_keywords(html_dir) -> None:
+    controller, _, _ = make_controller(html_dir)
+    controller.query(QuerySpec(113, 113))
+
+    assert controller.query_scope_text() == "年度 113–113"
+
+
+# --- 候選 chips 與快取 ------------------------------------------------
+
+
+def test_add_and_remove_values(html_dir) -> None:
+    controller, _, _ = make_controller(html_dir)
+    controller.query(QuerySpec(113, 113))
+    controller.set_selection("subjects", ())
+
+    controller.add_values("subjects", ("國文",))
+    controller.add_values("subjects", ("國文",))
+    assert controller.selected_values("subjects") == ("國文",)
+
+    controller.remove_values("subjects", ("國文",))
+    assert controller.selected_values("subjects") == ()
+
+
+def test_candidates_cache_reused_until_selection_changes(html_dir) -> None:
+    controller, _, _ = make_controller(html_dir)
+    controller.query(QuerySpec(113, 113))
+
+    first = controller.candidates()
+    assert controller.candidates() is first, "選取未變時應沿用快取"
+
+    controller.set_selection("subjects", ("國文",))
+    assert controller.candidates() is not first
+
+
+def test_candidates_prune_selections_that_left_the_pool(html_dir) -> None:
+    """取消某考試後，該考試專屬的類科／科目應自動移出選取。"""
+    controller, _, _ = make_controller(html_dir)
+    controller.query(QuerySpec(113, 113))
+    before = len(controller.state.categories)
+    exam = controller.selected_values("exams")[0]
+
+    controller.remove_values("exams", (exam,))
+    candidates = controller.candidates()
+
+    assert len(controller.state.categories) == len(candidates.categories)
+    assert len(controller.state.subjects) == len(candidates.subjects)
+    assert len(controller.state.categories) < before
+
+
+def test_query_resets_quick_filter_text(html_dir) -> None:
+    controller, _, _ = make_controller(html_dir)
+    controller.query(QuerySpec(113, 113))
+    controller.quick_text["subjects"] = "法學"
+
+    controller.query(QuerySpec(113, 113))
+
+    assert controller.quick_text["subjects"] == ""
+
+
+def test_selected_values_rejects_unknown_dimension(html_dir) -> None:
+    controller, _, _ = make_controller(html_dir)
+    controller.query(QuerySpec(113, 113))
+
+    with pytest.raises(ValueError):
+        controller.selected_values("unknown")
 
 
 def test_progress_reports_partial_completion(html_dir) -> None:

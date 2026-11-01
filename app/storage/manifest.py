@@ -31,7 +31,7 @@ from app.models import (
     YearDiagnostics,
 )
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 DDL = """
 PRAGMA journal_mode=WAL;
@@ -93,6 +93,7 @@ CREATE TABLE IF NOT EXISTS attachments (
     last_modified TEXT,
     question_type TEXT,
     version       INTEGER NOT NULL DEFAULT 1,
+    dedupe_of     TEXT,
     error_code    TEXT,
     error_message TEXT,
     updated_at    TEXT NOT NULL
@@ -187,11 +188,18 @@ class ManifestStore:
     def initialize(self) -> None:
         with self._connection() as conn:
             conn.executescript(DDL)
+            self._migrate(conn)
             conn.execute(
                 "INSERT INTO meta (key, value) VALUES ('schema_version', ?) "
                 "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
                 (str(SCHEMA_VERSION),),
             )
+
+    def _migrate(self, conn: sqlite3.Connection) -> None:
+        """把既有資料庫補上新增欄位（只新增可空欄位，不動既有資料）。"""
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(attachments)")}
+        if "dedupe_of" not in columns:
+            conn.execute("ALTER TABLE attachments ADD COLUMN dedupe_of TEXT")
 
     # --- 寫入 ---------------------------------------------------------
     def save_snapshot(self, snapshot: QuerySnapshot) -> None:
@@ -362,6 +370,25 @@ class ManifestStore:
             rows = conn.execute(query, params).fetchall()
         return tuple(_attachment_from_row(row) for row in rows)
 
+    def find_content_duplicate(
+        self, *, sha256: str, exclude_asset_id: str
+    ) -> AttachmentRow | None:
+        """找出同內容且已完成的既有附件（供內容去重共用檔案）。"""
+        with self._connection() as conn:
+            row = conn.execute(
+                "SELECT * FROM attachments"
+                " WHERE sha256 = ? AND asset_id <> ? AND path IS NOT NULL"
+                " AND status IN (?, ?)"
+                " ORDER BY rowid LIMIT 1",
+                (
+                    sha256,
+                    exclude_asset_id,
+                    AttachmentStatus.COMPLETED.value,
+                    AttachmentStatus.SKIPPED.value,
+                ),
+            ).fetchone()
+        return _attachment_from_row(row) if row else None
+
     def mark_attachment_started(
         self, *, asset_id: str, snapshot_id: str, record_id: str, url: str, role: str
     ) -> None:
@@ -422,8 +449,12 @@ class ManifestStore:
         last_modified: str | None = None,
         question_type: str | None = None,
         status: AttachmentStatus = AttachmentStatus.COMPLETED,
+        dedupe_of: str | None = None,
     ) -> None:
-        """標記完成（含已略過），並寫入版本紀錄。"""
+        """標記完成（含已略過），並寫入版本紀錄。
+
+        dedupe_of 記錄「內容與哪個 asset 相同、共用同一實體檔」，便於後續稽核。
+        """
         timestamp = _now_iso()
         with self._connection() as conn:
             conn.execute("BEGIN")
@@ -431,8 +462,8 @@ class ManifestStore:
                 conn.execute(
                     "UPDATE attachments SET status = ?, path = ?, sha256 = ?, size = ?,"
                     " version = ?, etag = ?, last_modified = ?, question_type = ?,"
-                    " error_code = NULL, error_message = NULL, updated_at = ?"
-                    " WHERE asset_id = ?",
+                    " dedupe_of = ?, error_code = NULL, error_message = NULL,"
+                    " updated_at = ? WHERE asset_id = ?",
                     (
                         status.value,
                         path,
@@ -442,6 +473,7 @@ class ManifestStore:
                         etag,
                         last_modified,
                         question_type,
+                        dedupe_of,
                         timestamp,
                         asset_id,
                     ),
@@ -562,6 +594,7 @@ class AttachmentRow:
     error_message: str | None
     updated_at: str
     question_type: str | None = None
+    dedupe_of: str | None = None
 
 
 @dataclass(frozen=True)
@@ -592,6 +625,7 @@ def _attachment_from_row(row) -> AttachmentRow:
         error_message=row["error_message"],
         updated_at=row["updated_at"],
         question_type=row["question_type"],
+        dedupe_of=row["dedupe_of"],
     )
 
 

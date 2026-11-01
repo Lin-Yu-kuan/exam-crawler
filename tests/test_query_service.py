@@ -7,6 +7,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 from conftest import synthetic_year_page
 
+from app.crawler.moex_client import SourceError
 from app.engine.query_service import MAX_YEARS, QueryCancelled, QueryService
 from app.models import ParseStatus, QuerySpec
 from app.storage.manifest import ManifestStore
@@ -15,13 +16,33 @@ from app.storage.manifest import ManifestStore
 class StubClient:
     """以固定 HTML 回應模擬查詢客戶端，並記錄呼叫。"""
 
-    def __init__(self, pages: dict[int, str]) -> None:
+    def __init__(
+        self,
+        pages: dict[int, str],
+        *,
+        fail_keywords: Exception | None = None,
+    ) -> None:
         self.pages = pages
+        self.fail_keywords = fail_keywords
         self.calls: list[tuple[int, str]] = []
+        self.keyword_calls: list[tuple[str, str, str] | None] = []
+        self.resets = 0
 
-    def search(self, *, year_roc: int, exam_code: str = "") -> str:
+    def search(
+        self,
+        *,
+        year_roc: int,
+        exam_code: str = "",
+        keywords: tuple[str, str, str] | None = None,
+    ) -> str:
         self.calls.append((year_roc, exam_code))
+        self.keyword_calls.append(keywords)
+        if keywords and self.fail_keywords is not None:
+            raise self.fail_keywords
         return self.pages[year_roc]
+
+    def reset(self) -> None:
+        self.resets += 1
 
 
 class StubClock:
@@ -84,7 +105,7 @@ def test_cross_batch_duplicates_are_deduped(store, sample_html) -> None:
 
     assert len(snapshot.records) == 371
     assert snapshot.status is ParseStatus.INCOMPLETE
-    assert any("統計不符" in warning for warning in snapshot.warnings)
+    assert any("合併後紀錄數不符" in warning for warning in snapshot.warnings)
 
 
 def test_limit_exceeded_snapshot_is_incomplete(store, html_dir) -> None:
@@ -209,3 +230,45 @@ def test_year_range_too_large_is_rejected(store) -> None:
 def test_invalid_year_order_is_rejected() -> None:
     with pytest.raises(ValueError):
         QuerySpec(114, 113)
+
+
+# --- 第一階段關鍵字（類科／科目） --------------------------------------
+
+
+def test_keywords_use_advanced_search_and_local_filter(store, sample_html) -> None:
+    client = StubClient({113: sample_html})
+    service = QueryService(client, store)
+
+    snapshot = service.query(QuerySpec(113, 113, subject_keyword="國文"))
+
+    assert client.keyword_calls == [("", "", "國文")]
+    assert snapshot.records
+    assert all("國文" in record.subject for record in snapshot.records)
+    assert snapshot.years[0].parsed.subjects == 371, "診斷仍應記錄完整解析結果"
+    assert any("本機關鍵字過濾" in warning for warning in snapshot.warnings)
+    assert snapshot.status is ParseStatus.OK
+
+
+def test_advanced_failure_falls_back_to_simple_query(store, sample_html) -> None:
+    client = StubClient({113: sample_html}, fail_keywords=SourceError("模擬伺服器拒絕"))
+    service = QueryService(client, store)
+
+    snapshot = service.query(QuerySpec(113, 113, category_keyword="一般行政"))
+
+    assert client.keyword_calls == [("", "一般行政", ""), None]
+    assert client.resets == 1
+    assert any("改用完整查詢" in warning for warning in snapshot.warnings)
+    assert snapshot.records
+    assert all("一般行政" in record.category for record in snapshot.records)
+    assert snapshot.status is ParseStatus.OK
+
+
+def test_cache_key_includes_keywords(store) -> None:
+    service = QueryService(StubClient({}), store)
+
+    assert service.cache_key(QuerySpec(113, 113, subject_keyword="國文")) != service.cache_key(
+        QuerySpec(113, 113)
+    )
+    assert service.cache_key(
+        QuerySpec(113, 113, category_keyword="一般行政")
+    ) != service.cache_key(QuerySpec(113, 113, subject_keyword="國文"))

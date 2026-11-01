@@ -226,6 +226,34 @@ def apply_selection(
     return tuple(record for record in records if matcher.match(record))
 
 
+def records_matching_keywords(
+    records: tuple[ExamRecord, ...],
+    *,
+    exam_name: str = "",
+    category: str = "",
+    subject: str = "",
+) -> tuple[ExamRecord, ...]:
+    """第一階段關鍵字過濾（純函式）。
+
+    與官方伺服端前篩互補：官方做原始字串比對，這裡用正規化鍵（NFKC、去空白）
+    再確認一次，避免全形或排版空白造成漏抓；空關鍵字代表不限制。
+    """
+    exam_keys = tuple(key for key in expand_exam_query(exam_name) if key) if exam_name else ()
+    category_key = compact_key(category) if category else ""
+    subject_key = compact_key(subject) if subject else ""
+
+    matched: list[ExamRecord] = []
+    for record in records:
+        if exam_keys and not any(key in record.exam_name_key for key in exam_keys):
+            continue
+        if category_key and category_key not in record.category_key:
+            continue
+        if subject_key and subject_key not in record.subject_key:
+            continue
+        matched.append(record)
+    return tuple(matched)
+
+
 def _count_by(
     records: tuple[ExamRecord, ...], attribute: str
 ) -> dict[str, tuple[str, int]]:

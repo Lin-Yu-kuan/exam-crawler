@@ -24,6 +24,18 @@ MAX_REDIRECTS = 5
 ERROR_PAGE_MARKER = "htmNotFoundPage"
 ROC_OFFSET = 1911
 
+# --- 進階查詢控制項（實測 2026-11-01） ---------------------------------
+IBTN_FULL = "ctl00$holderContent$ibtnFull"
+BTN_QUERY = "ctl00$holderContent$btnQuery"
+BTN_SEARCH = "ctl00$holderContent$btnSearch"
+DISPLAY_MODE_CONTROL = "ctl00$holderContent$ddlExamDisplayMode1"
+EXAM_KEYWORD_CONTROL = "ctl00$holderContent$txtExamSetName"
+CATEGORY_KEYWORD_CONTROL = "ctl00$holderContent$txtCategoryName"
+SUBJECT_KEYWORD_CONTROL = "ctl00$holderContent$txtSubjectName"
+
+#: 關鍵字順序：(考試名稱, 類科, 科目)
+KeywordTuple = tuple[str, str, str]
+
 
 class SourceError(Exception):
     """來源存取失敗的基礎例外；message 為可顯示的繁中說明。"""
@@ -134,6 +146,7 @@ class MoexClient:
         )
         self._form: SearchFormPage | None = None
         self._values: dict[str, str] = {}
+        self._advanced_keywords: KeywordTuple | None = None
         self.request_count = 0
         self.postback_count = 0
 
@@ -148,10 +161,11 @@ class MoexClient:
         self.close()
 
     def reset(self) -> None:
-        """重建 Session：清除 Cookie 與表單狀態。"""
+        """重建 Session：清除 Cookie、表單狀態與進階查詢狀態。"""
         self._http.cookies.clear()
         self._form = None
         self._values = {}
+        self._advanced_keywords = None
 
     # --- 網域與請求 ---------------------------------------------------
     def _validate_url(self, url: str) -> None:
@@ -270,32 +284,95 @@ class MoexClient:
             return
         self._postback(YEAR_END_CONTROL, target)
 
+    def _enter_advanced(self, keywords: KeywordTuple) -> SearchFormPage:
+        """切換到進階查詢：GET 簡易表單 → POST ibtnFull → 重新解析表單。
+
+        先重建表單狀態，確保上一次的關鍵字不會殘留在 ViewState 中。
+        """
+        self.reset()
+        form = self._form_page(force=True)
+        response = self._request(
+            "POST",
+            form.action,
+            self._payload(
+                {
+                    IBTN_FULL: "切換至進階查詢",
+                    "__EVENTTARGET": "",
+                    "__EVENTARGUMENT": "",
+                }
+            ),
+        )
+        self.postback_count += 1
+        self._advanced_keywords = keywords
+        return self._remember_form(response.text)
+
+    def _leave_advanced(self) -> None:
+        """離開進階模式：清除表單狀態，下次查詢會重新取得簡易表單。"""
+        if self._advanced_keywords is not None:
+            self.reset()
+
     def search(
         self,
         *,
         year_roc: int,
         exam_code: str = "",
+        keywords: KeywordTuple | None = None,
         extra_fields: dict[str, str] | None = None,
     ) -> str:
         """查詢單一年度，回傳結果頁 HTML。
 
+        任一關鍵字非空時改用官方進階查詢（考試名稱／類科／科目）；
+        空白欄位一律不送出，避免沿用上一個關鍵字或表單的佔位文字。
         WebForms 狀態失效時重建 Session 並重播查詢步驟，最多 1 次。
         """
+        normalized: KeywordTuple = tuple(
+            (value or "").strip() for value in (keywords or ("", "", ""))
+        )  # type: ignore[assignment]
+        use_advanced = any(normalized)
+
         last_error: SourceError | None = None
         for attempt in (1, 2):
             try:
                 if attempt > 1:
                     self.reset()
+                if use_advanced:
+                    if self._advanced_keywords != normalized:
+                        self._enter_advanced(normalized)
+                else:
+                    self._leave_advanced()
+
                 form = self._form_page()
                 self.set_end_year(year_roc)
                 form = self._form_page()
-                extra = {
-                    YEAR_START_CONTROL: str(year_roc + ROC_OFFSET),
-                    EXAM_CODE_CONTROL: exam_code,
-                    "ctl00$holderContent$btnSearch": "查詢",
-                    "__EVENTTARGET": "",
-                    "__EVENTARGUMENT": "",
-                }
+
+                if use_advanced:
+                    extra = {
+                        YEAR_START_CONTROL: str(year_roc + ROC_OFFSET),
+                        EXAM_CODE_CONTROL: exam_code,
+                        DISPLAY_MODE_CONTROL: "0",
+                        BTN_QUERY: "查詢",
+                        "__EVENTTARGET": "",
+                        "__EVENTARGUMENT": "",
+                    }
+                    for control, value in zip(
+                        (
+                            EXAM_KEYWORD_CONTROL,
+                            CATEGORY_KEYWORD_CONTROL,
+                            SUBJECT_KEYWORD_CONTROL,
+                        ),
+                        normalized,
+                    ):
+                        if value:
+                            extra[control] = value
+                else:
+                    extra = {
+                        YEAR_START_CONTROL: str(year_roc + ROC_OFFSET),
+                        EXAM_CODE_CONTROL: exam_code,
+                        BTN_SEARCH: "查詢",
+                        "__EVENTTARGET": "",
+                        "__EVENTARGUMENT": "",
+                    }
+
                 if extra_fields:
                     extra.update(extra_fields)
                 self._values[EXAM_CODE_CONTROL] = exam_code

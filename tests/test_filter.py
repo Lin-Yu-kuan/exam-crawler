@@ -21,12 +21,13 @@ from app.engine.filter import (
     invert_visible,
     matches,
     quick_filter,
+    records_matching_keywords,
     resolve_frozen,
     select_all_visible,
     selection_stats,
     sort_records,
 )
-from app.models import AssetRole, ExamAsset, ExamRecord, QuestionType, TypeEvidence
+from app.models import AssetRole, ExamAsset, ExamRecord, QuestionType, TypeEvidence, compact_key
 
 EXAM_CHU = "113年公務人員初等考試"
 
@@ -364,3 +365,33 @@ def test_matches_requires_all_columns(records, all_state) -> None:
     record = records[0]
     assert matches(record, all_state) is True
     assert matches(record, pick(all_state, subjects=frozenset())) is False
+
+
+# --- 第一階段關鍵字過濾 ------------------------------------------------
+
+
+def test_records_matching_keywords_uses_normalized_keys(records) -> None:
+    """類科關鍵字以去空白後的字串比對（來源名稱含排版空白）。"""
+    matched = records_matching_keywords(records, category="一般 行政", subject="國文")
+
+    assert matched
+    assert all("國文" in record.subject for record in matched)
+    assert all(compact_key("一般行政") in record.category_key for record in matched)
+
+
+def test_records_matching_keywords_fullwidth_input(records) -> None:
+    matched = records_matching_keywords(records, subject="國　文")
+
+    assert matched
+    assert len(matched) == len(records_matching_keywords(records, subject="國文"))
+
+
+def test_records_matching_keywords_empty_means_unrestricted(records) -> None:
+    assert records_matching_keywords(records) == records
+
+
+def test_records_matching_keywords_exam_name(records) -> None:
+    matched = records_matching_keywords(records, exam_name="初考")
+
+    assert matched
+    assert all(record.exam_name == EXAM_CHU for record in matched)

@@ -38,6 +38,10 @@ MAX_YEAR = 115
 DIMENSIONS = ("exams", "categories", "subjects")
 DIMENSION_LABELS = {"exams": "考試", "categories": "類科", "subjects": "科目"}
 
+#: 控制器對外介面版本；UI 以此判斷 session 內的實例是否過期（熱重載後必須重建）。
+#: 只要新增／修改 AppController 的公開方法就必須 +1。
+CONTROLLER_API_VERSION = 1
+
 
 class QueryServiceProtocol(Protocol):
     def query(  # pragma: no cover - 介面
@@ -83,6 +87,8 @@ def validate_query_inputs(start_year: int, end_year: int) -> list[str]:
 class AppController:
     """介面狀態與 engine 呼叫的協調者。"""
 
+    api_version = CONTROLLER_API_VERSION
+
     def __init__(
         self,
         *,
@@ -102,6 +108,7 @@ class AppController:
         self.quick_text = {dimension: "" for dimension in DIMENSIONS}
         self.reconcile_report: ReconcileReport | None = None
         self._reconciled = False
+        self._candidates_cache: tuple[tuple, CandidateSets] | None = None
 
     # --- 查詢 ---------------------------------------------------------
     def query(
@@ -130,6 +137,7 @@ class AppController:
 
         self.snapshot = snapshot
         self.task_id = None
+        self.quick_text = {dimension: "" for dimension in DIMENSIONS}
         candidates = build_candidates(snapshot.records, FilterState())
         self.state = candidates.initial_state(
             year_start=spec.start_year, year_end=spec.end_year
@@ -138,9 +146,84 @@ class AppController:
 
     # --- 候選與選取 ---------------------------------------------------
     def candidates(self) -> CandidateSets:
+        """依目前選取計算候選（以選取狀態快取，避免每次重跑都重算）。
+
+        選取其他欄位後，某些已選值可能已不在候選池內（例如取消某考試後，
+        該考試專屬的類科）。這裡會把它們從選取中移除，讓「已選 N／總數」
+        永遠一致；移除後重新計算一次，必要時重複直到穩定（最多 3 輪）。
+        """
         if self.snapshot is None or self.state is None:
             return CandidateSets((), (), ())
-        return build_candidates(self.snapshot.records, self.state)
+        key = self._selection_key()
+        if self._candidates_cache is not None and self._candidates_cache[0] == key:
+            return self._candidates_cache[1]
+        computed = build_candidates(self.snapshot.records, self.state)
+        for _ in range(3):
+            if not self._prune_orphans(computed):
+                break
+            computed = build_candidates(self.snapshot.records, self.state)
+        self._candidates_cache = (self._selection_key(), computed)
+        return computed
+
+    def _prune_orphans(self, candidates: CandidateSets) -> bool:
+        """把不在候選池的已選值移除；有變動時回傳 True。"""
+        state = self.state
+        if state is None:
+            return False
+        data = {
+            "exams": state.exams,
+            "categories": state.categories,
+            "subjects": state.subjects,
+            "year_start": state.year_start,
+            "year_end": state.year_end,
+        }
+        changed = False
+        for dimension in DIMENSIONS:
+            available = {item.value for item in getattr(candidates, dimension)}
+            current = data[dimension]
+            kept = current & available
+            if kept != current:
+                data[dimension] = kept
+                changed = True
+        if changed:
+            self.state = FilterState(**data)
+        return changed
+
+
+    def _selection_key(self) -> tuple:
+        state = self.state
+        if state is None or self.snapshot is None:
+            return ()
+        return (
+            self.snapshot.snapshot_id,
+            tuple(sorted(state.exams)),
+            tuple(sorted(state.categories)),
+            tuple(sorted(state.subjects)),
+            state.year_start,
+            state.year_end,
+        )
+
+    def selected_values(self, dimension: str) -> tuple[str, ...]:
+        """目前已選的候選值（排序後，供 chips 顯示）。"""
+        if self.state is None:
+            return ()
+        if dimension not in DIMENSIONS:
+            raise ValueError(f"未知欄位：{dimension}")
+        return tuple(sorted(getattr(self.state, dimension)))
+
+    def add_values(self, dimension: str, values: tuple[str, ...]) -> None:
+        """把指定候選加入選取（供「從清單加入」使用）。"""
+        if self.state is None or not values:
+            return
+        merged = set(getattr(self.state, dimension)) | set(values)
+        self.set_selection(dimension, tuple(merged))
+
+    def remove_values(self, dimension: str, values: tuple[str, ...]) -> None:
+        """把指定候選移出選取（供「叉掉 chips」使用）。"""
+        if self.state is None or not values:
+            return
+        remaining = set(getattr(self.state, dimension)) - set(values)
+        self.set_selection(dimension, tuple(remaining))
 
     def visible(self, dimension: str) -> tuple[Candidate, ...]:
         """依快速過濾文字回傳可見候選（只影響顯示）。"""
@@ -190,12 +273,47 @@ class AppController:
     def stats(self) -> SelectionStats:
         return selection_stats(self.selected_records())
 
+    def query_scope_text(self) -> str:
+        """顯示本次查詢範圍（年度與已套用的關鍵字）。"""
+        if self.snapshot is None:
+            return "尚未查詢"
+        spec = self.snapshot.spec
+        parts = [f"年度 {spec.start_year}–{spec.end_year}"]
+        if spec.exam_code:
+            parts.append(f"考試代碼 {spec.exam_code}")
+        for label, value in (
+            ("考試名稱", spec.exam_name_keyword),
+            ("類科", spec.category_keyword),
+            ("科目", spec.subject_keyword),
+        ):
+            if value:
+                parts.append(f"{label}含「{value}」")
+        return "｜".join(parts)
+
     def can_download(self) -> bool:
         if self.snapshot is None or not self.snapshot.is_complete or self.state is None:
             return False
         return can_download(self.state, self.stats())
 
     # --- 路徑預覽 -----------------------------------------------------
+    def preview_fingerprint(
+        self, mode: PathMode = PathMode.A, template: str | None = None
+    ) -> tuple:
+        """預覽結果的識別碼：選取、年度、歸檔模式或模板任一變動即失效。"""
+        state = self.state
+        if state is None or self.snapshot is None:
+            return ()
+        return (
+            self.snapshot.snapshot_id,
+            mode.value,
+            template or "",
+            state.year_start,
+            state.year_end,
+            tuple(sorted(state.exams)),
+            tuple(sorted(state.categories)),
+            tuple(sorted(state.subjects)),
+        )
+
     def preview(self, mode: PathMode = PathMode.A, template: str | None = None) -> PathPlan | None:
         """計算暫定歸檔路徑（題型未確認者標示暫定）。"""
         self.last_error = None

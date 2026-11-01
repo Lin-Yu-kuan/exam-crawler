@@ -150,6 +150,8 @@ class FakeMoexServer:
         self.error_first_search = error_first_search
         self.force_status = force_status
         self._errored = False
+        self.advanced = False
+        self.last_query_fields: dict[str, str] = {}
         self.selected = {
             YEAR_START_CONTROL: "2026",
             YEAR_END_CONTROL: "2026",
@@ -189,6 +191,7 @@ class FakeMoexServer:
     def handler(self, request: httpx.Request) -> httpx.Response:
         import urllib.parse as _urlparse
 
+        from app.crawler.moex_client import BTN_QUERY, BTN_SEARCH, IBTN_FULL
         from app.crawler.parser import YEAR_END_CONTROL, YEAR_START_CONTROL
 
         self.requests.append(request)
@@ -202,22 +205,27 @@ class FakeMoexServer:
             if self.get_script:
                 return self._response_from_script(self.get_script.pop(0))
             # 全新 GET 等同新 Session：年度選項回到預設值
-            from app.crawler.parser import EXAM_CODE_CONTROL, YEAR_END_CONTROL, YEAR_START_CONTROL
+            from app.crawler.parser import EXAM_CODE_CONTROL
 
             self.selected = {
                 YEAR_START_CONTROL: "2026",
                 YEAR_END_CONTROL: "2026",
                 EXAM_CODE_CONTROL: "",
             }
+            self.advanced = False
             return httpx.Response(200, text=self._form_html())
 
         data = _urlparse.parse_qs(request.content.decode("utf-8"))
         target = data.get("__EVENTTARGET", [""])[0]
+        if IBTN_FULL in data:
+            self.advanced = True
+            return httpx.Response(200, text=self._form_html())
         if target in (YEAR_START_CONTROL, YEAR_END_CONTROL):
             self.selected[target] = data.get(target, [""])[0]
             return httpx.Response(200, text=self._form_html())
 
-        if "ctl00$holderContent$btnSearch" in data:
+        if BTN_SEARCH in data or BTN_QUERY in data:
+            self.last_query_fields = {key: values[0] for key, values in data.items()}
             if self.error_first_search and not self._errored:
                 self._errored = True
                 return httpx.Response(302, headers={"location": "/htmNotFoundPage.htm"})
