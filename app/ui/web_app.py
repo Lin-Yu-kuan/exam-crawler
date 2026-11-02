@@ -585,7 +585,8 @@ def _render_task(controller: AppController, auto_refresh: bool, root: str = DEFA
             st.write(f"預計歸檔 {stats.total_files} 個檔案；實際傳輸（去重）{stats.unique_urls} 份。")
             st.caption("內容相同的附件會共用同一個檔案，實際檔案數可能較少；題型與檔名以下載驗證後為準。")
     disabled = not controller.can_download()
-    if st.button("開始下載", type="primary", disabled=disabled, width="stretch"):
+    btn_label = "開始加載" if is_cloud_env() else "開始下載"
+    if st.button(btn_label, type="primary", disabled=disabled, width="stretch"):
         state = controller.start_download()
         if controller.last_error:
             st.error(controller.last_error)
@@ -629,8 +630,9 @@ def _render_task(controller: AppController, auto_refresh: bool, root: str = DEFA
     )
 
     # 任務完成或部分完成時，提供整包打包下載（雲端必備，本機亦可方便打包）
+    actual_root = str(controller._root) if hasattr(controller, "_root") else root
     if state.status in (TaskStatus.COMPLETED, TaskStatus.PARTIAL) and (state.completed > 0 or state.skipped > 0):
-        zip_bytes = _create_zip_from_root(root)
+        zip_bytes = _create_zip_from_root(actual_root)
         if zip_bytes:
             st.download_button(
                 label="📦 下載已分類好的題庫包 (ZIP 壓縮檔)",
@@ -641,11 +643,31 @@ def _render_task(controller: AppController, auto_refresh: bool, root: str = DEFA
                 width="stretch",
                 key="download-zip-btn",
             )
+        elif is_cloud_env():
+            st.warning("⚠️ 題庫檔案正在整理中，若未出現下載按鈕請稍候片刻或按重試。")
 
     if state.failures:
-        with st.expander(f"失敗附件（{len(state.failures)}）"):
-            for asset_id, code, message in state.failures[:20]:
-                st.text(f"{asset_id}｜{code}｜{message}")
+        # 建立 asset_id -> (record, asset) 快速查找表
+        asset_map = {}
+        if controller.snapshot is not None:
+            for rec in controller.snapshot.records:
+                for a in rec.assets:
+                    asset_map[a.asset_id] = (rec, a)
+
+        with st.expander(f"⚠️ 部分附件加載失敗（{len(state.failures)} 項，點此展開官方直連下載）"):
+            st.caption("考選部伺服器偶有連線逾時，您可以點擊「重試未完成」，或直接點選下方官方原始連結手動開啟：")
+            for asset_id, code, message in state.failures[:30]:
+                info = asset_map.get(asset_id)
+                if info:
+                    rec, asset = info
+                    role_text = "試題" if asset.role is AssetRole.QUESTION else "答案"
+                    st.markdown(
+                        f"- **{rec.year}年 {rec.exam_name}｜{rec.category}｜{rec.subject}（{role_text}）**  \n"
+                        f"  狀態：`{code}` - {message}  \n"
+                        f"  👉 [🔗 點此以瀏覽器開啟官方原始{role_text}檔]({asset.url})"
+                    )
+                else:
+                    st.text(f"{asset_id}｜{code}｜{message}")
     if state.unsupported:
         with st.expander(f"不支援的附件（{len(state.unsupported)}）"):
             for asset_id, reason in state.unsupported[:20]:
@@ -662,19 +684,31 @@ def _render_task(controller: AppController, auto_refresh: bool, root: str = DEFA
 
 
 def _create_zip_from_root(root: str) -> bytes | None:
-    """將題庫目錄下所有已歸檔的 PDF 檔案（排除 _系統資料與暫存檔）打包成 ZIP 二進位資料。"""
-    root_path = Path(root)
+    """將題庫目錄下所有已歸檔的 PDF 檔案打包成符合跨平台（Windows/Mac/Linux）UTF-8 規範之 ZIP。"""
+    root_path = Path(root).resolve()
     if not root_path.exists():
         return None
-    pdf_files = [p for p in root_path.rglob("*.pdf") if SYSTEM_DIR_NAME not in p.parts and ".parts" not in p.parts]
+    pdf_files = [
+        p for p in root_path.rglob("*.pdf")
+        if SYSTEM_DIR_NAME not in p.parts and ".parts" not in p.parts and p.is_file() and p.stat().st_size > 0
+    ]
     if not pdf_files:
         return None
+
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
         for p in pdf_files:
-            rel = p.relative_to(root_path)
-            zf.write(p, arcname=str(rel))
-    return buf.getvalue()
+            rel_path = p.relative_to(root_path).as_posix()
+            file_bytes = p.read_bytes()
+            # 明確設定 ZipInfo 與 flag_bits |= 0x800，告知所有解壓縮工具檔名為 UTF-8，防止 Windows 內建解壓縮判定損毀
+            zinfo = zipfile.ZipInfo(filename=rel_path, date_time=time.localtime(p.stat().st_mtime)[:6])
+            zinfo.compress_type = zipfile.ZIP_DEFLATED
+            zinfo.flag_bits |= 0x800
+            zinfo.external_attr = 0o644 << 16
+            zf.writestr(zinfo, file_bytes)
+
+    data = buf.getvalue()
+    return data if len(data) > 22 else None
 
 def _section_heading(number: str, title: str, description: str) -> None:
     """以固定文案顯示一致的流程標題。"""

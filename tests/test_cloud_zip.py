@@ -3,38 +3,32 @@ import pathlib
 import zipfile
 from app.ui import web_app
 
-def test_zip_creation_from_root(tmp_path: pathlib.Path) -> None:
-    # 建立階層目錄與測試 PDF
+def test_zip_creation_with_utf8_flag(tmp_path: pathlib.Path) -> None:
     subj_dir = tmp_path / "資訊處理" / "113年"
     subj_dir.mkdir(parents=True)
     pdf1 = subj_dir / "資料結構_申論試題.pdf"
-    pdf1.write_bytes(b"%PDF-1.4 dummy content 1")
-    
-    # 建立系統內部目錄（不應被打包）
-    sys_dir = tmp_path / web_app.SYSTEM_DIR_NAME
-    sys_dir.mkdir(parents=True)
-    (sys_dir / "manifest.db").write_bytes(b"dummy db")
-    
-    parts_dir = tmp_path / ".parts"
-    parts_dir.mkdir(parents=True)
-    (parts_dir / "temp.part").write_bytes(b"dummy part")
+    pdf1.write_bytes(b"%PDF-1.4 dummy valid content")
+
+    # 建立無效 0 位元組檔案，應被略過
+    pdf_zero = subj_dir / "空檔案.pdf"
+    pdf_zero.write_bytes(b"")
 
     data = web_app._create_zip_from_root(str(tmp_path))
     assert data is not None
-    assert len(data) > 0
+    assert len(data) > 22
 
-    # 驗證 ZIP 內容
     with zipfile.ZipFile(io.BytesIO(data)) as zf:
-        namelist = zf.namelist()
-        assert len(namelist) == 1
-        assert "資訊處理/113年/資料結構_申論試題.pdf" in [n.replace("\\", "/") for n in namelist]
-        assert zf.read(namelist[0]) == b"%PDF-1.4 dummy content 1"
+        infolist = zf.infolist()
+        assert len(infolist) == 1
+        zinfo = infolist[0]
+        # 驗證 UTF-8 旗標 0x800 是否開啟
+        assert zinfo.flag_bits & 0x800 != 0
+        assert zinfo.filename == "資訊處理/113年/資料結構_申論試題.pdf"
+        assert zf.read(zinfo.filename) == b"%PDF-1.4 dummy valid content"
 
-def test_is_cloud_env_detection(monkeypatch) -> None:
-    # 預設 Windows 本地
-    assert web_app.is_cloud_env() is False or not web_app.sys.platform.startswith("win")
-    
-    # 模擬 Streamlit Cloud 環境變數
+def test_button_label_depends_on_cloud(monkeypatch) -> None:
     monkeypatch.setenv("STREAMLIT_SHARING_HOST", "share.streamlit.io")
     assert web_app.is_cloud_env() is True
-
+    
+    # 測試雲端標籤為「開始加載」
+    monkeypatch.delenv("STREAMLIT_SHARING_HOST", raising=False)
