@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import io
 import os
 import subprocess
@@ -683,6 +684,68 @@ def _render_task(controller: AppController, auto_refresh: bool, root: str = DEFA
 
 
 
+def _sanitize_zip_rel_path(rel_path: str, max_bytes: int = 180) -> str:
+    """確保 ZIP 內相對路徑之 UTF-8 位元組不超過 Windows zipfldr.dll 之上限 (255 bytes)。
+    
+    保留前後結構，若過長則在中間段落或檔名主體截斷並加上雜湊，保證 Windows 檔案總管能正常開啟且不碰撞。
+    """
+    if len(rel_path.encode("utf-8")) <= max_bytes:
+        return rel_path
+
+    parts = rel_path.split("/")
+    new_parts: list[str] = []
+    for i, part in enumerate(parts):
+        is_filename = (i == len(parts) - 1)
+        suffix = ".pdf" if (is_filename and part.lower().endswith(".pdf")) else ""
+        stem = part[:-4] if suffix else part
+        
+        # 尋找是否包含角色標記（如 _試題、_測驗試題、_申論試題、_測驗答案等）
+        role_marker = ""
+        if is_filename:
+            for marker in ("_測驗試題", "_申論試題", "_混合試題", "_測驗答案", "_試題", "_答案"):
+                if marker in stem:
+                    role_marker = marker
+                    stem = stem[:stem.rfind(marker)]
+                    break
+
+        # 若單段 UTF-8 超過 80 位元組，進行縮短
+        if len((stem + role_marker).encode("utf-8")) > 80:
+            h = hashlib.sha256((stem + role_marker).encode("utf-8")).hexdigest()[:6]
+            target_stem = 80 - len(role_marker.encode("utf-8")) - 7
+            while len(stem.encode("utf-8")) > max(10, target_stem):
+                stem = stem[:-1]
+            stem = f"{stem}_{h}"
+        new_parts.append(stem + role_marker + suffix)
+
+    res = "/".join(new_parts)
+    # 若整體總長度依然超過 max_bytes，進一步縮減檔名主體
+    if len(res.encode("utf-8")) > max_bytes and len(new_parts[-1]) > 10:
+        filename = new_parts[-1]
+        suffix = ".pdf" if filename.lower().endswith(".pdf") else ""
+        stem = filename[:-4] if suffix else filename
+        h = hashlib.sha256(rel_path.encode("utf-8")).hexdigest()[:6]
+        
+        role_marker = ""
+        for marker in ("_測驗試題", "_申論試題", "_混合試題", "_測驗答案", "_試題", "_答案"):
+            if marker in stem:
+                role_marker = marker
+                stem = stem[:stem.rfind(marker)]
+                break
+        
+        dir_bytes = len("/".join(new_parts[:-1]).encode("utf-8")) if len(new_parts) > 1 else 0
+        target_stem_len = max_bytes - dir_bytes - 1 - len(role_marker.encode("utf-8")) - len(suffix.encode("utf-8")) - 8
+        if target_stem_len < 10:
+            target_stem_len = 10
+            
+        while len(stem.encode("utf-8")) > target_stem_len:
+            stem = stem[:-1]
+            
+        new_parts[-1] = f"{stem}_{h}{role_marker}{suffix}"
+        res = "/".join(new_parts)
+        
+    return res
+
+
 def _create_zip_from_root(root: str) -> bytes | None:
     """將題庫目錄下所有已歸檔的 PDF 檔案打包成符合跨平台（Windows/Mac/Linux）UTF-8 規範之 ZIP。"""
     root_path = Path(root).resolve()
@@ -696,15 +759,35 @@ def _create_zip_from_root(root: str) -> bytes | None:
         return None
 
     buf = io.BytesIO()
+    created_dirs: set[str] = set()
+
     with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-        for p in pdf_files:
-            rel_path = p.relative_to(root_path).as_posix()
+        for p in sorted(pdf_files):
+            raw_rel_path = p.relative_to(root_path).as_posix()
+            rel_path = _sanitize_zip_rel_path(raw_rel_path, max_bytes=180)
             file_bytes = p.read_bytes()
-            # 明確設定 ZipInfo 與 flag_bits |= 0x800，告知所有解壓縮工具檔名為 UTF-8，防止 Windows 內建解壓縮判定損毀
-            zinfo = zipfile.ZipInfo(filename=rel_path, date_time=time.localtime(p.stat().st_mtime)[:6])
+            mtime = time.localtime(p.stat().st_mtime)[:6]
+
+            # 1. 自動為所有各層父資料夾建立標準目錄條目（Directory Entry）
+            # Windows Explorer (zipfldr.dll) 嚴格依賴以 '/' 結尾且 external_attr=0x10 的目錄項來構建資料夾樹
+            parts = rel_path.split("/")
+            for i in range(1, len(parts)):
+                dir_path = "/".join(parts[:i]) + "/"
+                if dir_path not in created_dirs:
+                    created_dirs.add(dir_path)
+                    dir_info = zipfile.ZipInfo(filename=dir_path, date_time=mtime)
+                    dir_info.create_system = 0  # 0 = Windows FAT，保證與 Windows 檔案總管 100% 相容
+                    dir_info.external_attr = 0x10  # FILE_ATTRIBUTE_DIRECTORY
+                    dir_info.flag_bits |= 0x800  # UTF-8 檔名旗標
+                    zf.writestr(dir_info, b"")
+
+            # 2. 寫入檔案條目
+            # 明確設定 create_system=0 (Windows FAT), external_attr=0x20 (Archive), flag_bits |= 0x800 (UTF-8)
+            zinfo = zipfile.ZipInfo(filename=rel_path, date_time=mtime)
+            zinfo.create_system = 0
+            zinfo.external_attr = 0x20  # FILE_ATTRIBUTE_ARCHIVE
             zinfo.compress_type = zipfile.ZIP_DEFLATED
             zinfo.flag_bits |= 0x800
-            zinfo.external_attr = 0o644 << 16
             zf.writestr(zinfo, file_bytes)
 
     data = buf.getvalue()
