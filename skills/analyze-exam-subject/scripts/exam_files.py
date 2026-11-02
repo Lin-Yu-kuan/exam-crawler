@@ -215,15 +215,27 @@ def safe_name(value: str, fallback: str = "未命名科目") -> str:
     return text or fallback
 
 
-def run_dir(root: Path, subject: str) -> Path:
-    """在 _analysis 下建立唯一執行目錄，不寫入既有目錄。"""
+def run_dir(root: Path, subject: str, output_root: Path | None = None) -> Path:
+    """在來源 _analysis 或指定的外部輸出根目錄下建立唯一執行目錄。"""
     root = root.resolve(strict=True)
     if not root.is_dir():
         raise ValueError("來源必須是資料夾")
-    analysis_root = root / "_analysis"
-    base = analysis_root / safe_name(subject)
-    for directory in (analysis_root, base):
-        if directory.exists() and linked(directory):
+    if output_root is None:
+        analysis_root = root / "_analysis"
+        base = analysis_root / safe_name(subject)
+        for directory in (analysis_root, base):
+            if directory.exists() and linked(directory):
+                raise ValueError("輸出目錄不可為連結")
+    else:
+        raw = Path(output_root)
+        if raw.is_symlink():
+            raise ValueError("輸出根目錄不可為連結")
+        out = raw.resolve()
+        if out.exists() and (not out.is_dir() or linked(out)):
+            raise ValueError("輸出根目錄必須是可寫入的一般資料夾")
+        out.mkdir(parents=True, exist_ok=True)
+        base = out / safe_name(subject)
+        if base.exists() and linked(base):
             raise ValueError("輸出目錄不可為連結")
     for _ in range(5):
         candidate = base / f"{datetime.now():%Y%m%d-%H%M%S}-{secrets.token_hex(3)}"
@@ -270,6 +282,7 @@ def main() -> int:
     run = commands.add_parser("run-dir", help="在 _analysis 下建立新的執行目錄")
     run.add_argument("root", type=Path)
     run.add_argument("--subject", required=True)
+    run.add_argument("--output-root", type=Path, help="來源唯讀時，改用此外部可寫入根目錄")
     ext = commands.add_parser("extract", help="擷取已選 PDF 文字")
     ext.add_argument("--inventory", required=True, type=Path)
     ext.add_argument("--selection", type=Path)
@@ -286,7 +299,7 @@ def main() -> int:
     args = parser.parse_args()
     if args.command == "run-dir":
         try:
-            print(run_dir(args.root, args.subject))
+            print(run_dir(args.root, args.subject, args.output_root))
             return 0
         except (OSError, ValueError) as exc:
             print(f"無法完成：{exc}", file=sys.stderr)

@@ -16,6 +16,7 @@ INDEX_SCHEMA = 3
 SUMMARY_SCHEMA = 2
 MAX_SAMPLE_CHARS = 200
 MAX_WHY_CHARS = 200
+MAX_EVIDENCE_CHARS = 300
 RELEVANCE = {"r": "relevant", "c": "cross_domain", "i": "irrelevant", "u": "uncertain"}
 ANSWER_ROLES = {"official_answer", "corrected_answer"}
 _UNSET = object()
@@ -27,6 +28,8 @@ RULES = [
     "答案頁不可當成新題目；source_roles 指出本批來源是題目或答案。",
     "r=相關、c=交叉、i=不相關、u=待確認；c/u 必須寫 why；相關題必須有主題 ID。",
     "父題拆成獨立子題時加 count:false；sample 只寫短代表題摘要，不抄錄全文。",
+    "context_pages 是相鄰頁，只供跨頁題續讀；不要重複計算本批已處理的題目；確認續頁後用 pages 與 reviewed_pages 一起列出。",
+    "可選 parent 指向父題 ID，可選 evidence 寫短證據摘錄；不要貼全文。",
     "可選 answers 記錄官方答案配對，可選 duplicate_of 標記疑似相同題；不要自行合併。",
     "沒有視覺能力時 reviewed_pages 留空，questions 只能當暫定文字分析。",
 ]
@@ -110,6 +113,7 @@ def prepare(inventory: dict, selection: dict, renders: dict, topics: list[dict],
         renders_by_sha[sha] = doc
 
     warnings: list[str] = []
+    verification: dict[str, dict] = {}
     for sid, source in sources.items():
         document = renders_by_sha.get(source["sha256"])
         if document is None:
@@ -140,6 +144,12 @@ def prepare(inventory: dict, selection: dict, renders: dict, topics: list[dict],
         source["failed_pages"] = failed
         source["missing_pages"] = sorted(set(range(1, total + 1)) - set(source["rendered_pages"]))
         source["roles"] = sorted({ref.get("role") or "unknown" for ref in source["refs"]})
+        for ref in source["refs"]:
+            stat = Path(ref["path"]).stat()
+            verification[ref["path"]] = {"mtime_ns": stat.st_mtime_ns, "size": stat.st_size}
+        for image in source["pages"].values():
+            stat = Path(image["image"]).stat()
+            verification[image["image"]] = {"mtime_ns": stat.st_mtime_ns, "size": stat.st_size}
         if source["missing_pages"]:
             warnings.append(f"{sid} 只渲染 {len(pages)}/{total} 頁；未渲染頁：{_short_list(source['missing_pages'])}")
         if failed:
@@ -162,17 +172,31 @@ def prepare(inventory: dict, selection: dict, renders: dict, topics: list[dict],
                             "pages": [{"p": p, "image": source["pages"][str(p)]["image"]}
                                       for p in numbers[start:start + batch_size]]})
     return {"schema_version": 1, "kind": "compact-work", "config": config, "config_hash": signature,
-            "sources": sources, "batches": batches, "cached": cached, "warnings": warnings}
+            "sources": sources, "batches": batches, "cached": cached, "warnings": warnings,
+            "verification": verification}
 
 
-def packet(work: dict, batch_id: str) -> dict:
-    """只輸出當批圖片與分類表，完整來源登錄留在本機。"""
+def packet(work: dict, batch_id: str, context: int = 0) -> dict:
+    """只輸出當批圖片與分類表；context 可帶同卷前後相鄰頁供跨頁題續讀。"""
+    if not 0 <= context <= 2:
+        raise ValueError("context 必須介於 0～2")
     batch = next((b for b in work["batches"] if b["batch_id"] == batch_id), None)
     if batch is None:
         raise ValueError("找不到工作批次")
+    source = work["sources"][batch["source"]]
+    all_pages = sorted(map(int, source["pages"]))
+    batch_pages = [page["p"] for page in batch["pages"]]
+    positions = [all_pages.index(page) for page in batch_pages]
+    context_numbers: list[int] = []
+    if context and positions:
+        before = all_pages[max(0, min(positions) - context):min(positions)]
+        after = all_pages[max(positions) + 1:max(positions) + 1 + context]
+        context_numbers = [page for page in [*before, *after] if page not in batch_pages]
     return {"study_subject": work["config"]["study_subject"], "topics": work["config"]["topics"],
-            "source_roles": sorted({r.get("role") or "unknown" for r in work["sources"][batch["source"]]["refs"]}),
+            "source_roles": sorted({r.get("role") or "unknown" for r in source["refs"]}),
             "rules": list(RULES), "max_sample_chars": MAX_SAMPLE_CHARS, **batch,
+            "context_pages": [{"p": page, "image": source["pages"][str(page)]["image"], "role": "context"}
+                               for page in context_numbers],
             "reply": "results:[{source,reviewed_pages,questions:[{p,q,r,t}]}]；c/u 加 why，跨頁加 pages，父題加 count:false。可選 answers、duplicate_of、sample。"}
 
 
@@ -249,6 +273,29 @@ def _load_visual(review: dict | None, sources: dict[str, dict]) -> dict | None:
     return {"available": available, "pages": pages}
 
 
+def _load_extraction(extraction: dict | None, sources: dict[str, dict]) -> set[tuple[str, int]] | None:
+    """讀取文字擷取狀態；只有實際 text_extracted 的頁才算有文字。"""
+    if extraction is None:
+        return None
+    if extraction.get("schema_version") != 1:
+        raise ValueError("extraction schema_version 必須是 1")
+    by_sha = {source["sha256"]: source for source in sources.values()}
+    text_pages: set[tuple[str, int]] = set()
+    for document in extraction.get("documents", []):
+        sha = document.get("sha256")
+        source = by_sha.get(sha)
+        if source is None:
+            continue
+        total = source["total_pages"]
+        for page in document.get("pages", []):
+            number = page.get("page")
+            if type(number) is not int or not 1 <= number <= total:
+                continue
+            if page.get("status") == "text_extracted":
+                text_pages.add((sha, number))
+    return text_pages
+
+
 def _normalise_answers(value: Any, work: dict) -> list[dict]:
     if value is None:
         return []
@@ -273,6 +320,7 @@ def _normalise_answers(value: Any, work: dict) -> list[dict]:
             raise ValueError("答案 role 必須是 official_answer 或 corrected_answer")
         result.append({"source": sid, "path": source["refs"][0]["path"], "sha256": source["sha256"],
                        "page": page, "question_number": number.strip(), "role": role,
+                       "answer": str(answer.get("answer", "")).strip(),
                        "basis": str(answer.get("basis", "")).strip(),
                        "conflict": str(answer.get("conflict", "")).strip()})
     return result
@@ -301,11 +349,28 @@ def _normalise_duplicates(value: Any) -> list[dict]:
     return result
 
 
-def merge(work: dict, results: list[dict], visual_review: dict | None = None) -> dict:
-    """合併精簡判斷並補回來源；可選讀 visual-review 驗證實際開圖。"""
+def _verify_file(path: Path, expected: str, verification: dict, fast: bool, message: str) -> None:
+    """完整雜湊是預設；fast 只跳過 mtime/size 未變的檔案，變更仍會重算。"""
+    if fast:
+        record = verification.get(str(path))
+        try:
+            stat = path.stat()
+        except OSError:
+            stat = None
+        if record and stat and record.get("mtime_ns") == stat.st_mtime_ns and record.get("size") == stat.st_size:
+            return
+    if digest(path) != expected:
+        raise ValueError(message)
+
+
+def merge(work: dict, results: list[dict], visual_review: dict | None = None,
+          extraction: dict | None = None, fast_verify: bool = False) -> dict:
+    """合併精簡判斷並補回來源；可選讀 visual-review 與 extraction 驗證證據。"""
     if work.get("kind") != "compact-work":
         raise ValueError("不是 compact-work")
     visual = _load_visual(visual_review, work["sources"])
+    text_pages = _load_extraction(extraction, work["sources"])
+    verification = work.get("verification", {})
     if visual is not None and visual["available"] is not True:
         if any(entry.get("reviewed_pages") for entry in results):
             raise ValueError("host_vision 未確認為 true，reviewed_pages 必須留空")
@@ -361,13 +426,24 @@ def merge(work: dict, results: list[dict], visual_review: dict | None = None) ->
             if score is not None and (type(score) not in {int, float} or isinstance(score, bool)
                                       or not math.isfinite(score) or score < 0):
                 raise ValueError("score 必須是非負有限數字")
+            parent = row.get("parent")
+            if parent is not None and (not isinstance(parent, str) or not parent.strip()):
+                raise ValueError("parent 必須是題目 ID 或 null")
+            parent = parent.strip() if isinstance(parent, str) else None
+            evidence = row.get("evidence", "")
+            if evidence is None:
+                evidence = ""
+            if not isinstance(evidence, str) or len(evidence.strip()) > MAX_EVIDENCE_CHARS:
+                raise ValueError("evidence 必須是短字串")
+            evidence = evidence.strip()
             answers_raw = row.get("answers") or []
             answers = _normalise_answers(answers_raw, work)
             duplicates = _normalise_duplicates(row.get("duplicate_of"))
             normalized = {"p": p, "q": number.strip(), "r": rel, "t": sorted(set(tags)),
                           "pages": sorted(set(pages)), "count": row.get("count", True),
                           "why": why, "sample": sample, "answers": answers_raw,
-                          "duplicate_of": duplicates, "score": score}
+                          "duplicate_of": duplicates, "score": score,
+                          "parent": parent, "evidence": evidence}
             qid = f"{sid}-P{p}-Q{number.strip()}"
             if qid in questions:
                 if questions[qid]["_compact"] != normalized:
@@ -380,7 +456,8 @@ def merge(work: dict, results: list[dict], visual_review: dict | None = None) ->
                               "question_number": number.strip(), "countable": normalized["count"],
                               "relevance": RELEVANCE[rel], "topic_ids": normalized["t"],
                               "reason": why, "summary": sample, "source_refs": source["refs"],
-                              "answer_refs": answers, "score": score,
+                              "answer_refs": answers, "score": score, "parent_question_id": parent,
+                              "evidence_excerpt": evidence,
                               "_source": sid, "_source_sha": source["sha256"],
                               "_full_reviewed": set(normalized["pages"]).issubset(seen_set),
                               "_duplicates": duplicates, "_compact": normalized}
@@ -391,22 +468,29 @@ def merge(work: dict, results: list[dict], visual_review: dict | None = None) ->
                 raise ValueError("題目不可標記為自己的重複題")
             if duplicate["id"] not in questions:
                 raise ValueError(f"duplicate_of 指向未知題目：{duplicate['id']}")
+        parent_id = question["parent_question_id"]
+        if parent_id:
+            if parent_id == question["question_id"]:
+                raise ValueError("題目不可標記為自己的父題")
+            if parent_id not in questions:
+                raise ValueError(f"parent 指向未知題目：{parent_id}")
+            if questions[parent_id]["countable"] is not False:
+                raise ValueError("父題必須設 count:false")
 
     source_status: dict[str, str] = {}
     cache: dict[str, dict] = {}
     for sid, source in work["sources"].items():
         # 即使工作包來自上次，也核對 PDF 與圖片內容，不盲信快取。
         for ref in source["refs"]:
-            if digest(Path(ref["path"])) != source["sha256"]:
-                raise ValueError("來源已變更，請重新 prepare")
+            _verify_file(Path(ref["path"]), source["sha256"], verification, fast_verify, "來源已變更，請重新 prepare")
         for image in source["pages"].values():
-            if digest(Path(image["image"])) != image["sha256"]:
-                raise ValueError("圖片已變更，請重新 render／prepare")
+            _verify_file(Path(image["image"]), image["sha256"], verification, fast_verify,
+                         "圖片已變更，請重新 render／prepare")
         source_questions = [q for q in questions.values() if q["_source"] == sid]
         total = source["total_pages"]
         page_complete = type(total) is int and total > 0 and reviewed[sid] == set(range(1, total + 1))
         no_uncertain = all(row["r"] != "u" for row in compact_rows[sid])
-        visual_complete = True
+        visual_complete = False
         if visual is not None:
             visual_complete = visual["available"] is True and type(total) is int and total > 0 and all(
                 (source["sha256"], page) in visual["pages"]
@@ -424,7 +508,8 @@ def merge(work: dict, results: list[dict], visual_review: dict | None = None) ->
         full_reviewed = question["_full_reviewed"]
         for page in question["pages"]:
             if visual is None:
-                state = "checked" if full_reviewed else "not_checked"
+                # 沒有 visual-review 就沒有實際開圖證據；只保留文字暫判。
+                state = "not_checked"
                 row = None
             else:
                 row = visual["pages"].get((question["_source_sha"], page))
@@ -452,7 +537,14 @@ def merge(work: dict, results: list[dict], visual_review: dict | None = None) ->
             visual_status = "not_checked"
         checked = visual_status == "checked"
         question["visual_status"] = visual_status
-        question["interpretation_method"] = "text_and_vision" if checked else "text_only"
+        if checked:
+            if text_pages is not None and not any(
+                    (question["_source_sha"], page) in text_pages for page in question["pages"]):
+                question["interpretation_method"] = "vision_only"
+            else:
+                question["interpretation_method"] = "text_and_vision"
+        else:
+            question["interpretation_method"] = "text_only"
         if visual_status == "unreadable":
             question["analysis_status"] = "unreadable"
         elif checked and question["relevance"] != "uncertain":
@@ -468,10 +560,12 @@ def merge(work: dict, results: list[dict], visual_review: dict | None = None) ->
         question.pop("_duplicates")
         question.pop("_compact")
 
-    coverage, paths = _coverage(work, reviewed, visual, source_status)
+    coverage, paths = _coverage(work, reviewed, visual, source_status, text_pages)
     warnings = list(work.get("warnings", []))
     if visual is None:
-        warnings.append("未提供 visual-review；checked 僅依 AI reviewed_pages，正式交付前應補視覺證據。")
+        warnings.append("未提供 visual-review；本次只產生 partial 的文字暫判，所有題目維持 not_checked。")
+    elif visual["available"] is not True:
+        warnings.append("host_vision 未確認為 true；本次只產生 partial 的文字暫判。")
     result = {"schema_version": INDEX_SCHEMA, **work["config"], "config_hash": work["config_hash"],
               "status": "complete" if source_status and all(s == "complete" for s in source_status.values()) else "partial",
               "source_status": paths, "questions": list(questions.values()), "cache": cache,
@@ -480,7 +574,7 @@ def merge(work: dict, results: list[dict], visual_review: dict | None = None) ->
 
 
 def _coverage(work: dict, reviewed: dict[str, set[int]], visual: dict | None,
-              source_status: dict[str, str]) -> tuple[dict, list[dict]]:
+              source_status: dict[str, str], text_pages: set[tuple[str, int]] | None) -> tuple[dict, list[dict]]:
     """以唯一 (sha256, page) 計頁，以唯一路徑計檔；不把各階段相加。"""
     if visual is not None:
         checked = {(sha, page) for (sha, page), row in visual["pages"].items()
@@ -494,6 +588,13 @@ def _coverage(work: dict, reviewed: dict[str, set[int]], visual: dict | None,
     by_sha = {source["sha256"]: source for source in work["sources"].values()}
     checked = {(sha, page) for sha, page in checked if sha in by_sha and str(page) in by_sha[sha]["pages"]}
     unreadable = {(sha, page) for sha, page in unreadable if sha in by_sha and str(page) in by_sha[sha]["pages"]}
+    if text_pages is None:
+        text_extracted_pages = None
+    else:
+        text_extracted_pages = sum(1 for sha, page in text_pages
+                                  if sha in by_sha
+                                  and type(by_sha[sha].get("total_pages")) is int
+                                  and 1 <= page <= by_sha[sha]["total_pages"])
     totals = [source["total_pages"] for source in work["sources"].values()]
     selected_pages = None if any(total is None for total in totals) else sum(totals)
     unrendered_pages = None if selected_pages is None else max(0, selected_pages - rendered)
@@ -528,7 +629,7 @@ def _coverage(work: dict, reviewed: dict[str, set[int]], visual: dict | None,
         "selected_files": len(file_rows), "processed_files": counts["processed"],
         "failed_files": counts["failed"], "pending_files": counts["pending"],
         "needs_review_files": counts["needs_review"],
-        "selected_pages": selected_pages, "text_extracted_pages": None,
+        "selected_pages": selected_pages, "text_extracted_pages": text_extracted_pages,
         "rendered_pages": rendered, "visually_checked_pages": len(checked),
         "pending_visual_pages": pending_visual_pages,
         "unrendered_pages": unrendered_pages,
@@ -626,11 +727,15 @@ def main() -> int:
     pack = sub.add_parser("packet")
     pack.add_argument("--work", required=True, type=Path)
     pack.add_argument("--batch-id", required=True)
+    pack.add_argument("--context", type=int, default=0, help="額外帶入同卷前後相鄰頁數（0～2）")
     pack.add_argument("--output", required=True, type=Path)
     combine = sub.add_parser("merge")
     combine.add_argument("--work", required=True, type=Path)
     combine.add_argument("--results", nargs="*", type=Path, default=[])
     combine.add_argument("--visual-review", type=Path)
+    combine.add_argument("--extraction", type=Path)
+    combine.add_argument("--fast-verify", action="store_true",
+                         help="用 prepare 記錄的 mtime/size 跳過未變更檔案的雜湊；預設完整重算")
     combine.add_argument("--require-complete", action="store_true")
     combine.add_argument("--output", required=True, type=Path)
     summary = sub.add_parser("summary")
@@ -658,11 +763,13 @@ def main() -> int:
                              args.batch_size)
         elif args.command == "merge":
             result = merge(read_json(args.work), [entry for path in args.results for entry in read_json(path)["results"]],
-                           read_json(args.visual_review) if args.visual_review else None)
+                           read_json(args.visual_review) if args.visual_review else None,
+                           read_json(args.extraction) if args.extraction else None,
+                           fast_verify=args.fast_verify)
             if args.require_complete and result["status"] != "complete":
                 raise ValueError("分析尚未完成，不能標記為完整")
         elif args.command == "packet":
-            result = packet(read_json(args.work), args.batch_id)
+            result = packet(read_json(args.work), args.batch_id, args.context)
         else:
             result = summarize(read_json(args.index), args.examples, _parse_target(args.target))
         write_new(args.output, result)

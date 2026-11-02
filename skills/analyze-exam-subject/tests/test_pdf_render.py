@@ -210,6 +210,24 @@ class RenderTests(unittest.TestCase):
         self.assertFalse(rows[1]["reused"])
         self.assertTrue(all(row["reused"] for row in rows[2:]))
 
+    def test_journal_replay_recovers_completed_page(self) -> None:
+        first = self.run_render()
+        document = first["documents"][0]
+        page_one = document["pages"][0]
+        output = self.output.parent / "journal-index.json"
+        tool.write_new(output, {"schema_version": 1, "kind": "exam-render-index", "config": first["config"],
+                                "page_scope": None, "status": "in_progress", "documents": [
+                                    {"sha256": document["sha256"], "paths": document["paths"],
+                                     "status": "in_progress", "total_pages": 6, "pages": []}]})
+        journal = output.with_name(output.name + ".journal.jsonl")
+        journal.write_text(json.dumps({"sha256": document["sha256"], "row": page_one}, ensure_ascii=False) + "\n",
+                           encoding="utf-8")
+        resumed = renderer.render_pdf(self.data, self.selection, None, output, resume_path=output)
+        rows = resumed["documents"][0]["pages"]
+        self.assertEqual(len(rows), 6)
+        self.assertTrue(rows[0]["reused"])
+        self.assertFalse(journal.exists())
+
     def test_same_output_rejects_scope_or_config_change(self) -> None:
         self.run_render()
         with self.assertRaises(ValueError):

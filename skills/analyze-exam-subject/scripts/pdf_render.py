@@ -49,6 +49,37 @@ def checkpoint(output: Path, data: dict[str, Any]) -> None:
         temp.unlink(missing_ok=True)
 
 
+def journal_path(output: Path) -> Path:
+    """逐頁進度先寫 append-only journal，文件結束才折回完整索引。"""
+    return output.with_name(output.name + ".journal.jsonl")
+
+
+def append_journal(path: Path, sha: str, row: dict[str, Any]) -> None:
+    with path.open("a", encoding="utf-8") as stream:
+        stream.write(json.dumps({"sha256": sha, "row": row}, ensure_ascii=False) + "\n")
+        stream.flush()
+        os.fsync(stream.fileno())
+
+
+def replay_journal(data: dict[str, Any], path: Path) -> dict[str, Any]:
+    """重放中斷前的頁面；最後一行可能被截斷，忽略不能解析的尾行。"""
+    if not path.exists():
+        return data
+    documents = {doc.get("sha256"): doc for doc in data.get("documents", [])}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        row = entry.get("row") if isinstance(entry, dict) else None
+        doc = documents.get(entry.get("sha256")) if isinstance(entry, dict) else None
+        if doc is not None and isinstance(row, dict):
+            _put_page(doc, row)
+    return data
+
+
 def cached_page(row: dict[str, Any], image_root: Path, image_module: Any) -> bool:
     """快取只信任本地圖片雜湊與實際像素，不信任先前的成功標籤。"""
     try:
@@ -139,6 +170,7 @@ def render_pdf(data: dict[str, Any], selection: dict[str, Any] | None,
     previous = read_json(resume_path) if resume_path else None
     if previous is not None and (previous.get("kind") != "exam-render-index" or previous.get("schema_version") != 1):
         raise ValueError("resume 不是支援的渲染索引")
+    resume_journal = journal_path(resume_path.resolve()) if resume_path else None
     same_output = resume_path is not None and resume_path.resolve() == output
     if output.exists() and not same_output:
         raise ValueError("輸出已存在，請使用新的索引或以 --resume 恢復同一索引")
@@ -157,6 +189,9 @@ def render_pdf(data: dict[str, Any], selection: dict[str, Any] | None,
         previous_shas = {doc.get("sha256") for doc in previous.get("documents", [])}
         if previous_shas != selected_shas:
             raise ValueError("同一索引僅允許相同選取恢復，請使用新輸出")
+    if previous is not None and resume_journal is not None:
+        previous = replay_journal(previous, resume_journal)
+    journal = journal_path(output)
     image_root = output.parent / "render-images"
     if image_root.exists() and linked(image_root):
         raise ValueError("圖片目錄不可為連結")
@@ -178,11 +213,13 @@ def render_pdf(data: dict[str, Any], selection: dict[str, Any] | None,
             doc["status"] = "in_progress"
             doc.pop("error", None)
         checkpoint(output, result)
+        journal.unlink(missing_ok=True)
     else:
         result = {"schema_version": 1, "kind": "exam-render-index", "config": config,
                   "page_scope": pages, "status": "in_progress", "documents": []}
         docs_by_sha = {}
         write_new(output, result)
+        journal.unlink(missing_ok=True)
     grouped: dict[str, list[str]] = {}
     for item in chosen:
         path = Path(item["path"])
@@ -236,8 +273,13 @@ def render_pdf(data: dict[str, Any], selection: dict[str, Any] | None,
                     except Exception as exc:
                         row = {"page": number, "source_sha256": sha, "status": "failed",
                                "visual_status": "not_checked", "error": str(exc)}
+                    except BaseException:
+                        # 中斷時先把目前已完成的頁折回索引，再放棄控制權。
+                        checkpoint(output, result)
+                        journal.unlink(missing_ok=True)
+                        raise
                     _put_page(doc, row)
-                    checkpoint(output, result)
+                    append_journal(journal, sha, row)
                 doc["pages"].sort(key=lambda row: row.get("page", 0))
                 seen_pages: set[Any] = set()
                 unique_pages = []
@@ -253,6 +295,8 @@ def render_pdf(data: dict[str, Any], selection: dict[str, Any] | None,
         except Exception as exc:
             doc.update(status="failed", error=str(exc))
         checkpoint(output, result)
+        journal.unlink(missing_ok=True)
     result["status"] = "rendered" if all(doc["status"] == "rendered" for doc in result["documents"]) else "partial"
     checkpoint(output, result)
+    journal.unlink(missing_ok=True)
     return result

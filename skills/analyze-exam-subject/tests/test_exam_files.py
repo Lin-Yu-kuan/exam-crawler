@@ -120,6 +120,25 @@ class FileTests(unittest.TestCase):
         self.assertEqual(db.read_bytes(), before)
         self.assertEqual(data["warnings"], [])
 
+    def test_manifest_schema_v1_is_supported(self) -> None:
+        pdf(self.root / "試題.pdf")
+        sha = tool.digest(self.root / "試題.pdf")
+        db = Path(self.temp.name) / "manifest-v1.sqlite3"
+        with sqlite3.connect(db) as conn:
+            conn.executescript("""
+                CREATE TABLE meta(key TEXT, value TEXT);
+                INSERT INTO meta VALUES('schema_version', '1');
+                CREATE TABLE attachments(sha256 TEXT, asset_id TEXT, record_id TEXT, snapshot_id TEXT, role TEXT);
+                CREATE TABLE snapshot_records(record_id TEXT, snapshot_id TEXT, year INTEGER, exam_name TEXT, category TEXT, subject TEXT);
+            """)
+            conn.execute("INSERT INTO attachments VALUES(?, 'a1', 'r1', 's1', '試題')", (sha,))
+            conn.execute("INSERT INTO snapshot_records VALUES('r1', 's1', 112, '初等考試', '各類科', '國文')")
+        conn.close()
+        data = tool.inventory(self.root, db)
+        self.assertEqual(data["warnings"], [])
+        self.assertEqual(data["files"][0]["metadata"][0]["subject"], "國文")
+        self.assertEqual(data["files"][0]["metadata"][0]["role"], "試題")
+
     def test_unknown_manifest_falls_back(self) -> None:
         pdf(self.root / "試題.pdf")
         db = Path(self.temp.name) / "unknown.db"
@@ -162,6 +181,11 @@ class FileTests(unittest.TestCase):
         self.assertTrue(second.is_dir())
         self.assertNotEqual(first, second)
         self.assertEqual(first.parent.parent, self.root / "_analysis")
+        external_root = Path(self.temp.name) / "外部輸出"
+        external = tool.run_dir(self.root, "資料/結構", external_root)
+        self.assertTrue(external.is_dir())
+        self.assertEqual(external.parent.parent, external_root)
+        self.assertTrue(external.is_relative_to(external_root))
 
     def test_write_new_is_atomic_and_rejects_existing(self) -> None:
         output = self.root / "out.json"
@@ -182,6 +206,17 @@ class FileTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             tool.write_new(link, {"a": 1})
         self.assertFalse(target.exists())
+
+    def test_junction_directory_is_not_followed(self) -> None:
+        outside = Path(self.temp.name) / "junction-outside"
+        outside.mkdir()
+        pdf(outside / "outside.pdf")
+        junction = self.root / "junction"
+        result = subprocess.run(["cmd", "/c", "mklink", "/J", str(junction), str(outside)],
+                                capture_output=True, text=True, encoding="utf-8", errors="replace")
+        if result.returncode != 0:
+            self.skipTest(f"環境不允許建立 junction：{result.stdout}{result.stderr}")
+        self.assertEqual(tool.inventory(self.root)["files"], [])
 
     def test_extract_resume_rejects_render_index(self) -> None:
         pdf(self.root / "試題.pdf")

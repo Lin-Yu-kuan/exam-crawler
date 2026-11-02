@@ -25,14 +25,14 @@ target_exam 預設 null；可為完整考試名稱字串，或 exam_name／categ
 ```shell
 python scripts/compact_analysis.py prepare --inventory inventory.json --selection selection.json --render-index render-index.json --topics topics.json --output work.json
 python scripts/compact_analysis.py status --work work.json
-python scripts/compact_analysis.py packet --work work.json --batch-id S來源短ID-1 --output packet-001.json
-python scripts/compact_analysis.py merge --work work.json --results result-001.json result-002.json --visual-review visual-review.json --output question-index.json
+python scripts/compact_analysis.py packet --work work.json --batch-id S來源短ID-1 --context 1 --output packet-001.json
+python scripts/compact_analysis.py merge --work work.json --results result-001.json result-002.json --visual-review visual-review.json --extraction extraction.json --output question-index.json
 python scripts/compact_analysis.py summary --index question-index.json --target "高考" --examples 2 --output summary.json
 ```
 
-prepare 的 stdout 顯示實際 batch_id；`status` 列出待處理批次與已完成快取，長流程不必讀完整 work.json。`merge --visual-review` 會用宿主實際開圖紀錄核對 page／image 雜湊，這是指定 `checked` 的唯一可靠來源；`--require-complete` 可在交付前拒絕 partial。`summary --target` 只改變統計目標，不會重跑 AI。
+prepare 的 stdout 顯示實際 batch_id；`status` 列出待處理批次與已完成快取，長流程不必讀完整 work.json。`merge --visual-review` 會用宿主實際開圖紀錄核對 page／image 雜湊，這是指定 `checked` 的唯一可靠來源；`merge --extraction` 會補 `text_extracted_pages` 與 `vision_only`；`merge --fast-verify` 可用 prepare 記錄的 mtime／size 跳過未變更檔案的雜湊（預設完整重算）。`--require-complete` 可在交付前拒絕 partial。`summary --target` 只改變統計目標，不會重跑 AI。
 
-work 是本機完整登錄，不要整份放入模型上下文。packet 只包含當批圖片、source ID、角色、主題表及必要規則；宿主須實際開圖，不把圖片路徑當圖片內容。每批結果獨立落盤，不在聊天中重述全部題目。packet 的 `rules` 包含資料與指令的邊界、答案頁不可當題、跨頁與 `reviewed_pages` 規則；`target_exam` 不會放進 packet，避免模型只分類目標考試。
+work 是本機完整登錄，不要整份放入模型上下文。packet 只包含當批圖片、source ID、角色、主題表及必要規則；`--context 1` 會額外帶入同卷前後各一頁到 `context_pages`，只供跨頁題續讀，不重複計算。宿主須實際開圖，不把圖片路徑當圖片內容。每批結果獨立落盤，不在聊天中重述全部題目。packet 的 `rules` 包含資料與指令的邊界、答案頁不可當題、跨頁與 `reviewed_pages` 規則；`target_exam` 不會放進 packet，避免模型只分類目標考試。
 
 ## AI 精簡回覆
 
@@ -46,13 +46,15 @@ work 是本機完整登錄，不要整份放入模型上下文。packet 只包�
 ```
 
 - source 複製 packet 的 ID；p 是起始 PDF 頁，q 保留印刷題號／子題號；r/c/i/u 是相關／交叉／不相關／待確認，t 是主題 ID。
-- 跨頁題加 pages，例如 `[2,3]`；父題拆成子題時加 `count:false`，子題 count 預設 true。若續頁在另一個批次，必須在讀完續頁的那一批重新輸出完整題目；merge 不會只因為 `reviewed_pages` 的聯集就標 checked。
+- 跨頁題加 pages，例如 `[2,3]`；父題拆成子題時加 `count:false`，子題 count 預設 true。若續頁在另一個批次，使用 `packet --context 1` 讀取 `context_pages`；讀完後在該批重新輸出完整題目並把續頁列入 `reviewed_pages`。merge 不會只因為 `reviewed_pages` 的聯集就標 checked。
 - 交叉與待確認題需 why；一般題不必寫理由。爭議排除也可加 why。why 與 sample 都有長度上限，避免把全文塞進精簡欄位。
 - sample 為可選短代表題摘要，僅少量代表題提供，不抄錄全文。
 - reviewed_pages 只列實際看清且已盤點完整的頁面；答案頁可標完成但 questions 為空；答案不可當新題目。
-- 可選 `answers` 記錄官方答案配對（source／p／q／role／basis），由 merge 補成 `answer_refs`；可選 `duplicate_of` 標記疑似相同題，由 merge 補成 `duplicate_candidates`，不自動合併。`score` 為可選非負數字，僅在來源確有配分時提供，summary 不自動推算占比。
+- 可選 `answers` 記錄官方答案配對（source／p／q／role／answer／basis），由 merge 補成 `answer_refs`；可選 `duplicate_of` 標記疑似相同題，由 merge 補成 `duplicate_candidates`，不自動合併。`score` 為可選非負數字，僅在來源確有配分時提供，summary 不自動推算占比。
+- 可選 `parent` 指向父題 ID（父題需 count:false）；可選 `evidence` 寫短證據摘錄（上限 300 字），merge 會補成 `parent_question_id` 與 `evidence_excerpt`。
+- 有提供 `merge --extraction` 時，若題目所有頁都沒有 text_extracted，`interpretation_method` 會是 vision_only；否則為 text_and_vision。沒有 extraction 時不猜文字狀態。
 - 無視覺時 reviewed_pages 留空，文字暫判可填 questions，但不計入已確認主統計。不可判讀題以 u 及 why 揭露。
-- 另存 visual-review.json 的能力與頁面觀察；merge 會核對實際圖片雜湊。工具不能證明模型真的看過圖片，`host_vision.available` 必須是 true 才能標 checked。未提供 visual-review 時 merge 仍可作相容分析，但會加 warning，正式報告應補實際開圖證據。
+- 另存 visual-review.json 的能力與頁面觀察；merge 會核對實際圖片雜湊。沒有 visual-review 或 `host_vision.available` 不是 true 時，所有題目維持 not_checked、整體 partial；只有實際開圖且頁面 checked 才能累積已確認主統計。
 
 ## 統計與快取
 

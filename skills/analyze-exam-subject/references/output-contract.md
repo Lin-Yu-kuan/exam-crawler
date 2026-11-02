@@ -6,7 +6,7 @@ JSON 使用 UTF-8。檔案路徑保存絕對路徑，頁碼為 PDF 一基頁碼�
 
 預設採 [精簡分析契約](compact-analysis.md)。AI 只產生短欄位結果，由 merge 補齊 question-index。summary／reason／evidence_excerpt 不再是每題必填；一般題可為空，頁碼與圖片證據仍保留。parent_question_id 可省略，以 countable=false 排除已拆分父題。可選 `answers`、`duplicate_of`、`score` 由 merge 驗證後補成 `answer_refs`、`duplicate_candidates`、`score`。
 
-work.json 保存 config、config_hash、來源 registry、batches 與可重用 cache，僅供本機程式使用。`config_hash` 只涵蓋分析設定（備考科目、分類表、分類版本、protocol）；個別來源 cache_key 另含 PDF／圖片雜湊與來源角色。`target_exam`、年度、考試名稱、官方科目等報告 metadata 不參與分析快取。packet 檔才提供宿主當批輸入。question-index 的 cache 是整卷精簡結果與 complete 標記；無此欄位的舊索引不能當作分析快取。
+work.json 保存 config、config_hash、來源 registry、batches、可重用 cache 與 `verification`（檔案 mtime/size）；僅供本機程式使用。`config_hash` 只涵蓋分析設定（備考科目、分類表、分類版本、protocol）；個別來源 cache_key 另含 PDF／圖片雜湊與來源角色。`target_exam`、年度、考試名稱、官方科目等報告 metadata 不參與分析快取。`merge --fast-verify` 可用 verification 跳過未變更檔案的雜湊；預設仍完整重算。packet 檔才提供宿主當批輸入；`packet --context` 會另加同卷相鄰頁的 `context_pages`，只供跨頁題續讀。question-index 的 cache 是整卷精簡結果與 complete 標記；無此欄位的舊索引不能當作分析快取。
 
 summary.json 保存唯一相關題數、補充題數、待確認數、coverage、主題計數、每主題有限代表題、年度考試分層與可選的答案／重複題計數。分類時使用 r/c/i/u；落盤索引轉為完整 relevance 列舉。不把 summary 的文字大小視為模型 Token 用量。
 
@@ -52,15 +52,15 @@ tool_version、pypdf_version、page_scope、documents。每筆 document 包含 s
 - relevance：relevant／cross_domain／irrelevant／uncertain；analysis_status：completed／needs_review／unreadable。
 - content_sha256 是來源 PDF 的內容雜湊，不是單題語意雜湊；question_id 以來源短 ID＋起始頁＋題號產生，跨卷同題以 duplicate_candidates 標記。
 - source_refs：path、sha256、year、exam_name、category、official_subject、role、event_id（未知為 null）、metadata_evidence。path 必須是絕對路徑。
-- answer_refs：source、path、sha256、page、question_number、role、basis、conflict；只接受 official_answer／corrected_answer，頁碼必須在已渲染範圍。
+- answer_refs：source、path、sha256、page、question_number、role、answer（可選答案內容）、basis、conflict；只接受 official_answer／corrected_answer，頁碼必須在已渲染範圍。
 - duplicate_candidates：other_question_id、reason；只標記，不自動合併，指向的題目必須存在。
-- visual_status：not_checked／checked／unreadable。提供 `merge --visual-review` 時，checked 必須有實際圖片證據且 `host_vision.available=true`；未提供時只能依 AI 的 reviewed_pages 作相容判定，並會在 warnings 提醒補視覺證據。render-index 本身永遠是 not_checked。
-- interpretation_method：text_only／text_and_vision；compact 流程目前不產生 vision_only，保留給未來有文字狀態對照的流程。
+- visual_status：not_checked／checked／unreadable。`checked` 必須來自 `merge --visual-review` 的實際圖片證據且 `host_vision.available=true`；未提供 visual-review 時所有題目維持 not_checked、整體為 partial，只保留文字暫判。render-index 本身永遠是 not_checked。
+- interpretation_method：text_only／vision_only／text_and_vision；有提供 `merge --extraction` 且題目所有頁都沒有 text_extracted 時為 vision_only。
 - image_evidence：source_sha256、page、image_path、image_sha256；可指向 300 DPI detail-index 的實際判讀圖片。
 - source_status：每個已選路徑的列表，欄位 path、sha256、status（pending／processed／failed／needs_review）、detail。
 - coverage：
   - selected_files、processed_files、failed_files、pending_files、needs_review_files。
-  - selected_pages、text_extracted_pages（未執行文字擷取時 null）、rendered_pages、visually_checked_pages、pending_visual_pages、unrendered_pages、unreadable_pages、render_failed_pages、unknown_page_count_files。
+  - selected_pages、text_extracted_pages（未提供 extraction 時 null）、rendered_pages、visually_checked_pages、pending_visual_pages、unrendered_pages、unreadable_pages、render_failed_pages、unknown_page_count_files。
   - pending_visual_pages 以「已選頁－已視覺核對頁」計，包含尚未渲染的頁；unrendered_pages 另列「已選頁－已渲染頁」。頁面採唯一來源內容＋頁碼計數；無法取得全卷頁數時 selected_pages=null，不報頁面覆蓋百分比。
 - 檔案與頁面計數可以重疊；不得把各階段頁數相加當總數。
 
@@ -71,7 +71,7 @@ tool_version、pypdf_version、page_scope、documents。每筆 document 包含 s
 - documents 每筆保留 sha256、paths、total_pages（開啟失敗時缺少）、status（in_progress／rendered／partial／failed）、pages、error（若有）。
 - pages：page、source_sha256、status（rendered／failed）、visual_status（固定 not_checked）。成功另含 image_path、image_sha256、width、height、requested_dpi、actual_dpi、render_version、cache_key、reused；失敗含 error。
 - 同一個 output 只允許搭配指向自己的 `--resume` 更新，且選取、page_scope 與渲染設定都必須相同；否則使用新輸出。變更範圍或設定不得覆寫同一索引。
-- 逐頁原子保存；恢復時先保留舊索引未處理頁，再更新本次頁；失敗頁可重試，已成功頁驗證後可重用。已在本次圖片目錄內的圖片直接沿用，不重複複製。
+- 逐頁進度先 append 到 `<output>.journal.jsonl` 並 fsync，文件結束折回索引後刪除 journal；恢復時先重放 journal。失敗頁可重試，已成功頁驗證後可重用。已在本次圖片目錄內的圖片直接沿用，不重複複製。
 
 ## visual-review.json（宿主生成，merge 讀取）
 

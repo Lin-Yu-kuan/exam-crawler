@@ -5,6 +5,7 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 import compact_analysis as compact
@@ -42,7 +43,7 @@ class CompactTests(unittest.TestCase):
 
     def test_hydration_and_unique_topic_statistics(self) -> None:
         work = self.work()
-        result = compact.merge(work, self.results(work))
+        result = compact.merge(work, self.results(work), self.visual_review())
         self.assertEqual(result["status"], "complete")
         q = result["questions"][0]
         self.assertEqual(q["source_refs"][0]["official_subject"], "資料結構與資料庫")
@@ -76,19 +77,20 @@ class CompactTests(unittest.TestCase):
         index = compact.merge(work, results)
         self.assertEqual(index["status"], "partial")
         self.assertTrue(any("visual-review" in warning for warning in index["warnings"]))
+        self.assertTrue(all(q["visual_status"] == "not_checked" for q in index["questions"]))
         self.assertEqual(compact.summarize(index)["unique_related_questions"], 0)
         results[0]["reviewed_pages"] = [1, 2]
         results[0]["questions"][0].update(r="u", t=[], why="圖形模糊")
-        index = compact.merge(work, results)
+        index = compact.merge(work, results, self.visual_review())
         self.assertEqual(index["status"], "partial")
         self.assertEqual(compact.summarize(index)["pending_questions"], 1)
 
     def test_whole_document_cache_and_classification_invalidation(self) -> None:
         work = self.work()
-        index = compact.merge(work, self.results(work))
+        index = compact.merge(work, self.results(work), self.visual_review())
         again = self.work(index)
         self.assertEqual(again["batches"], [])
-        self.assertEqual(len(compact.merge(again, [])["questions"]), 2)
+        self.assertEqual(len(compact.merge(again, [], self.visual_review())["questions"]), 2)
         self.topics[0]["label"] = "樹與索引"
         self.assertEqual(len(self.work(index)["batches"]), 2)
 
@@ -103,7 +105,7 @@ class CompactTests(unittest.TestCase):
     def test_target_exam_statistics_and_parent_not_counted(self) -> None:
         self.selection["target_exam"] = {"exam_name": "普考"}
         work = self.work()
-        index = compact.merge(work, self.results(work))
+        index = compact.merge(work, self.results(work), self.visual_review())
         stats = compact.summarize(index)
         self.assertEqual(stats["unique_related_questions"], 0)
         self.assertEqual(stats["supplemental_related_questions"], 1)
@@ -111,7 +113,7 @@ class CompactTests(unittest.TestCase):
         work = self.work()
         results = self.results(work)
         results[0]["questions"][0]["count"] = False
-        self.assertEqual(compact.summarize(compact.merge(work, results))["unique_related_questions"], 0)
+        self.assertEqual(compact.summarize(compact.merge(work, results, self.visual_review()))["unique_related_questions"], 0)
 
     def test_unknown_topic_and_out_of_scope_page_rejected(self) -> None:
         work = self.work()
@@ -126,7 +128,7 @@ class CompactTests(unittest.TestCase):
 
     def test_added_document_only_schedules_new_work(self) -> None:
         work = self.work()
-        prior = compact.merge(work, self.results(work))
+        prior = compact.merge(work, self.results(work), self.visual_review())
         other = self.root / "new.pdf"
         other.write_bytes(b"different content")
         sha = tool.digest(other)
@@ -157,6 +159,53 @@ class CompactTests(unittest.TestCase):
                            "image_sha256": tool.digest(self.image), "visual_status": status,
                            "observations": "synthetic", "reason": ""}
                           for page, status in statuses.items()]}
+
+    def test_fast_verify_skips_unchanged_hash_and_falls_back_when_needed(self) -> None:
+        work = self.work()
+        with patch.object(compact, "digest", side_effect=AssertionError("hash should be skipped")):
+            index = compact.merge(work, self.results(work), fast_verify=True)
+            self.assertEqual(len(index["questions"]), 2)
+            with self.assertRaises(AssertionError):
+                compact.merge(work, self.results(work))
+        self.image.write_bytes(b"changed image")
+        with self.assertRaises(ValueError):
+            compact.merge(work, self.results(work), fast_verify=True)
+
+    def test_visual_review_is_required_for_complete(self) -> None:
+        work = self.work()
+        no_visual = compact.merge(work, self.results(work))
+        self.assertEqual(no_visual["status"], "partial")
+        self.assertTrue(all(q["visual_status"] == "not_checked" for q in no_visual["questions"]))
+        self.assertTrue(all(q["analysis_status"] == "needs_review" for q in no_visual["questions"]))
+        self.assertEqual(compact.summarize(no_visual)["unique_related_questions"], 0)
+        with_visual = compact.merge(work, self.results(work), self.visual_review())
+        self.assertEqual(with_visual["status"], "complete")
+        self.assertTrue(all(q["visual_status"] == "checked" for q in with_visual["questions"]))
+        self.assertEqual(compact.summarize(with_visual)["unique_related_questions"], 1)
+
+    def test_parent_evidence_and_vision_only(self) -> None:
+        work = self.work()
+        sid = next(iter(work["sources"]))
+        results = self.results(work)
+        parent_id = f"{sid}-P1-Q1"
+        results[0]["questions"][0].update(count=False, sample="父題", evidence="短證據")
+        results[0]["questions"][1].update(r="r", t=["GRAPH"], parent=parent_id)
+        extraction = {"schema_version": 1, "documents": [{"sha256": self.sha, "pages": [
+            {"page": 1, "status": "text_extracted", "text": "page one"},
+            {"page": 2, "status": "needs_visual_review", "text": ""}]}]}
+        index = compact.merge(work, results, self.visual_review(), extraction)
+        first = next(q for q in index["questions"] if q["question_number"] == "1")
+        second = next(q for q in index["questions"] if q["question_number"] == "2")
+        self.assertEqual(first["parent_question_id"], None)
+        self.assertEqual(first["evidence_excerpt"], "短證據")
+        self.assertEqual(second["parent_question_id"], parent_id)
+        self.assertEqual(first["interpretation_method"], "text_and_vision")
+        self.assertEqual(second["interpretation_method"], "vision_only")
+        self.assertEqual(index["coverage"]["text_extracted_pages"], 1)
+        broken = deepcopy(results)
+        broken[0]["questions"][1]["parent"] = "UNKNOWN"
+        with self.assertRaises(ValueError):
+            compact.merge(work, broken, self.visual_review(), extraction)
 
     def test_contract_fields_and_visual_review(self) -> None:
         work = self.work()
@@ -206,18 +255,18 @@ class CompactTests(unittest.TestCase):
         first = {"source": sid, "reviewed_pages": [1],
                  "questions": [{"p": 1, "q": "1", "r": "r", "t": ["TREE"], "pages": [1, 2]}]}
         second = {"source": sid, "reviewed_pages": [2], "questions": []}
-        index = compact.merge(work, [first, second])
+        index = compact.merge(work, [first, second], self.visual_review())
         self.assertEqual(index["status"], "partial")
         self.assertEqual(index["questions"][0]["visual_status"], "not_checked")
         complete = {"source": sid, "reviewed_pages": [1, 2],
                     "questions": [{"p": 1, "q": "1", "r": "r", "t": ["TREE"], "pages": [1, 2]}]}
-        index = compact.merge(work, [first, complete])
+        index = compact.merge(work, [first, complete], self.visual_review())
         self.assertEqual(index["status"], "complete")
         self.assertEqual(index["questions"][0]["visual_status"], "checked")
 
     def test_target_and_metadata_changes_reuse_analysis_cache(self) -> None:
         work = self.work()
-        index = compact.merge(work, self.results(work))
+        index = compact.merge(work, self.results(work), self.visual_review())
         self.selection["target_exam"] = "普考"
         target_changed = self.work(index)
         self.assertEqual(target_changed["batches"], [])
@@ -253,6 +302,19 @@ class CompactTests(unittest.TestCase):
         self.assertEqual(packet["source_roles"], ["question"])
         self.assertGreater(packet["max_sample_chars"], 0)
 
+    def test_packet_context_pages_for_cross_batch_question(self) -> None:
+        work = self.work()
+        first, second = work["batches"][0]["batch_id"], work["batches"][1]["batch_id"]
+        packet = compact.packet(work, first, context=1)
+        self.assertEqual([page["p"] for page in packet["pages"]], [1])
+        self.assertEqual([page["p"] for page in packet["context_pages"]], [2])
+        self.assertEqual(packet["context_pages"][0]["role"], "context")
+        packet = compact.packet(work, second, context=1)
+        self.assertEqual([page["p"] for page in packet["pages"]], [2])
+        self.assertEqual([page["p"] for page in packet["context_pages"]], [1])
+        with self.assertRaises(ValueError):
+            compact.packet(work, first, context=3)
+
     def test_answers_duplicates_and_summary_override(self) -> None:
         answer = self.root / "答案.pdf"
         answer.write_bytes(b"answer fixture")
@@ -270,13 +332,14 @@ class CompactTests(unittest.TestCase):
         answer_sid = "S" + answer_sha[:16]
         results = self.results(work)
         results[0]["questions"][0]["answers"] = [
-            {"source": answer_sid, "p": 1, "q": "1", "role": "official_answer", "basis": "答案卷"}]
+            {"source": answer_sid, "p": 1, "q": "1", "role": "official_answer", "answer": "D", "basis": "答案卷"}]
         results[0]["questions"][1]["duplicate_of"] = [f"{sid}-P1-Q1"]
-        index = compact.merge(work, results)
+        index = compact.merge(work, results, self.visual_review())
         first = next(q for q in index["questions"] if q["question_number"] == "1")
         second = next(q for q in index["questions"] if q["question_number"] == "2")
         self.assertEqual(first["answer_refs"][0]["page"], 1)
         self.assertEqual(first["answer_refs"][0]["role"], "official_answer")
+        self.assertEqual(first["answer_refs"][0]["answer"], "D")
         self.assertEqual(second["duplicate_candidates"][0]["other_question_id"], f"{sid}-P1-Q1")
         stats = compact.summarize(index, target="普考")
         self.assertEqual(stats["unique_related_questions"], 0)
@@ -285,7 +348,7 @@ class CompactTests(unittest.TestCase):
         self.assertEqual(stats["schema_version"], 2)
         self.assertEqual(stats["answer_pair_count"], 1)
         self.assertEqual(stats["duplicate_candidate_count"], 1)
-        reused = compact.merge(self.work(index), [])
+        reused = compact.merge(self.work(index), [], self.visual_review())
         self.assertEqual(len(reused["questions"]), 2)
         self.assertEqual(reused["questions"][0]["answer_refs"][0]["question_number"], "1")
 

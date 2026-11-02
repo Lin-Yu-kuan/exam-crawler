@@ -23,9 +23,10 @@ Python 3.10+；盤點只用標準函式庫。PDF 擷取需要 pypdf。缺少時�
 
 ```shell
 python scripts/exam_files.py run-dir "D:/題庫" --subject "資料結構"
+python scripts/exam_files.py run-dir "D:/題庫" --subject "資料結構" --output-root "D:/分析輸出"
 ```
 
-工具會清理 `<>:"/\|?*`、控制字元、尾端句點與 Windows 保留名稱（`CON`、`NUL`、`COM1` 等），並使用時間戳加隨機碼。輸出根目錄固定在來源的 `_analysis` 下。
+工具會清理 `<>:"/\|?*`、控制字元、尾端句點與 Windows 保留名稱（`CON`、`NUL`、`COM1` 等），並使用時間戳加隨機碼。未指定 `--output-root` 時輸出根目錄固定在來源的 `_analysis` 下；來源唯讀時用外部可寫入根目錄，工具仍會拒絕連結目錄。
 
 ```shell
 python scripts/exam_files.py inventory "D:/題庫" --output "D:/題庫/_analysis/盤點/inventory.json"
@@ -34,7 +35,7 @@ python scripts/exam_files.py extract --inventory "D:/題庫/_analysis/盤點/inv
 python scripts/exam_files.py extract --inventory "D:/題庫/_analysis/盤點/inventory.json" --selection "D:/題庫/_analysis/資料結構/本次/selection.json" --output "D:/題庫/_analysis/資料結構/本次/extraction.json"
 ```
 
-`--pages` 為一基頁碼，以逗號分隔，例如 `1,2`；未提供代表全文。未提供 selection 時只允許首頁預覽，防止選取前擷取全部試卷。輸出以暫存檔原子發佈，必須是不存在的新檔，不覆寫來源。`--resume` 接受先前的 extraction.json，重用合格結果但仍輸出到新檔；render 的 `--resume` 接受 render-index.json，同一個 output 只允許相同選取、相同頁碼範圍與相同渲染設定恢復，否則請使用新輸出。圖片不覆寫，逐頁進度原子保存。文字與渲染索引不可混用。
+`--pages` 為一基頁碼，以逗號分隔，例如 `1,2`；未提供代表全文。未提供 selection 時只允許首頁預覽，防止選取前擷取全部試卷。輸出以暫存檔原子發佈，必須是不存在的新檔，不覆寫來源。`--resume` 接受先前的 extraction.json，重用合格結果但仍輸出到新檔；render 的 `--resume` 接受 render-index.json，同一個 output 只允許相同選取、相同頁碼範圍與相同渲染設定恢復，否則請使用新輸出。渲染逐頁寫 append-only journal，文件結束才折回索引；圖片不覆寫。文字與渲染索引不可混用。
 
 盤點檔案讀取失敗、資料夾存取失敗與未知 manifest 會列入 warnings；PDF 失敗會逐檔回報，其他檔案繼續。命令成功不表示所有 PDF 都成功，應檢查每筆 status。
 
@@ -45,12 +46,12 @@ python scripts/exam_files.py extract --inventory "D:/題庫/_analysis/盤點/inv
 ```shell
 python scripts/compact_analysis.py prepare --inventory inventory.json --selection selection.json --render-index render-index.json --topics topics.json --output work.json
 python scripts/compact_analysis.py status --work work.json
-python scripts/compact_analysis.py packet --work work.json --batch-id "S來源短ID-1" --output packet-001.json
-python scripts/compact_analysis.py merge --work work.json --results result-001.json --visual-review visual-review.json --output question-index.json
+python scripts/compact_analysis.py packet --work work.json --batch-id "S來源短ID-1" --context 1 --output packet-001.json
+python scripts/compact_analysis.py merge --work work.json --results result-001.json --visual-review visual-review.json --extraction extraction.json --output question-index.json
 python scripts/compact_analysis.py summary --index question-index.json --target "高考" --output summary.json
 ```
 
-`merge --visual-review` 會核對 `source_sha256`、頁碼與圖片雜湊；`host_vision.available` 不是 true 時不得有 checked 頁。`--results` 可接受多個檔案；全部命中快取時可省略。`--require-complete` 會在結果仍為 partial 時失敗，適合正式交付前檢查。`summary --target` 只改變統計目標，不會重跑 AI；改目標考試或來源年度也不再使分析快取失效。
+`merge --visual-review` 會核對 `source_sha256`、頁碼與圖片雜湊；沒有 visual-review 或 `host_vision.available` 不是 true 時，只會得到 partial 的文字暫判，所有題目維持 not_checked。`merge --extraction` 會把文字擷取狀態帶進 `text_extracted_pages`，並在題目所有頁都沒有文字時標 `vision_only`。`merge --fast-verify` 可用 `prepare` 記錄的 mtime／size 跳過未變更檔案的雜湊，預設仍是完整重算；變更的檔案會重新計算並拒絕沿用。`packet --context 1` 會把同卷前後各一頁放進 `context_pages`，供跨頁題續讀，不重複計算。`--results` 可接受多個檔案；全部命中快取時可省略。`--require-complete` 會在結果仍為 partial 時失敗，適合正式交付前檢查。`summary --target` 只改變統計目標，不會重跑 AI；改目標考試或來源年度也不再使分析快取失效。
 
 `work.json` 的 `config_hash` 只涵蓋分析設定（備考科目、分類表、分類版本、protocol）；來源 cache_key 另含 PDF／圖片雜湊與來源角色。`target_exam`、年度、考試名稱等只影響報告統計，不影響分類快取。`question-index` 使用 schema 3，`summary` 使用 schema 2；`source_status` 為每個路徑的狀態列表。
 

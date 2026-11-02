@@ -4,7 +4,7 @@
 
 `render` 使用 pypdfium2＋Pillow，不是 OCR，也不自行呼叫模型。完整頁面包含文字、點陣圖片與向量內容；圖片格式為 PNG。預設 150 DPI，指定 `--dpi 300` 可重繪細節；接受正數且最高 1200 DPI。單張最多 16,000,000 像素，必要時等比例縮放，actual_dpi 可能小於 requested_dpi。無法安全渲染時回報 failed，不分配超限 bitmap。
 
-所有頁面依序處理並釋放 PDF page、bitmap 與 Pillow image。圖片存於索引旁 `render-images/`；每頁結束即原子更新 render-index。中斷時索引保留 in_progress，可恢復；恢復時先保留舊索引尚未處理的頁，再把本次處理頁覆蓋，不會把已完成的頁截掉。單頁失敗不阻止其他頁。
+所有頁面依序處理並釋放 PDF page、bitmap 與 Pillow image。圖片存於索引旁 `render-images/`；每頁結束先 append 到 `render-index.json.journal.jsonl` 並 fsync，文件結束才折回完整 render-index 並刪除 journal。中斷時索引保留 in_progress；恢復時先重放 journal，再把本次處理頁覆蓋，不會把已完成的頁截掉。單頁失敗不阻止其他頁。
 
 ```shell
 python scripts/exam_files.py render --inventory "D:/題庫/_analysis/盤點/inventory.json" --pages 1 --output "D:/題庫/_analysis/盤點/render-index.json"

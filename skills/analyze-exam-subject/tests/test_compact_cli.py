@@ -102,19 +102,25 @@ class CliTests(unittest.TestCase):
             "pages": [{"source_sha256": row["source_sha256"], "page": row["page"],
                        "image_path": row["image_path"], "image_sha256": row["image_sha256"],
                        "visual_status": "checked", "observations": "synthetic", "reason": ""} for row in rows]})
+        extraction = run / "extraction.json"
+        self.write_json(extraction, {"schema_version": 1, "documents": [
+            {"sha256": rendered["documents"][0]["sha256"],
+             "pages": [{"page": row["page"], "status": "text_extracted", "text": "synthetic"} for row in rows]}]})
         results = run / "results.json"
         self.write_json(results, {"results": [{"source": source, "reviewed_pages": [1, 2], "questions": [
             {"p": 1, "q": "1", "r": "r", "t": ["TREE"], "sample": "樹插入"},
             {"p": 2, "q": "2", "r": "i", "t": []}]}]})
         index = run / "question-index.json"
         self.run_cli(COMPACT, "merge", "--work", work, "--results", results, "--visual-review", visual,
-                     "--output", index)
+                     "--extraction", extraction, "--output", index)
         data = json.loads(index.read_text(encoding="utf-8"))
         self.assertEqual(data["status"], "complete")
         self.assertEqual(data["schema_version"], 3)
         self.assertEqual(data["coverage"]["visually_checked_pages"], 2)
+        self.assertEqual(data["coverage"]["text_extracted_pages"], 2)
         self.assertEqual(data["source_status"][0]["status"], "processed")
         self.assertEqual(data["questions"][0]["analysis_status"], "completed")
+        self.assertEqual(data["questions"][0]["interpretation_method"], "text_and_vision")
         summary = run / "summary.json"
         self.run_cli(COMPACT, "summary", "--index", index, "--target", "高考", "--output", summary)
         stats = json.loads(summary.read_text(encoding="utf-8"))
