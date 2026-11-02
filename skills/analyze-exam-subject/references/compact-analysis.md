@@ -18,24 +18,27 @@
 {"topics":[{"topic_id":"TREE","label":"樹"},{"topic_id":"STACK","label":"堆疊"}]}
 ```
 
-target_exam 預設 null；可為完整考試名稱字串，或 exam_name／category／year 的非空精確條件物件。模糊名稱先與使用者釐清。這只影響主統計，不擴張選取。分類表內容變更即使沒改版本也會失效快取。
+target_exam 預設 null；可為完整考試名稱字串，或 exam_name／category／year 的非空精確條件物件。模糊名稱先與使用者釐清。這只影響主統計，不擴張選取，也不納入分析快取；`summary --target` 可在同一份索引切換。分類表內容變更即使沒改版本也會失效快取。
 
 在技能資料夾執行，路徑須指向實際檔案，輸出皆為新檔：
 
 ```shell
 python scripts/compact_analysis.py prepare --inventory inventory.json --selection selection.json --render-index render-index.json --topics topics.json --output work.json
+python scripts/compact_analysis.py status --work work.json
 python scripts/compact_analysis.py packet --work work.json --batch-id S來源短ID-1 --output packet-001.json
-python scripts/compact_analysis.py merge --work work.json --results result-001.json result-002.json --output question-index.json
-python scripts/compact_analysis.py summary --index question-index.json --examples 2 --output summary.json
+python scripts/compact_analysis.py merge --work work.json --results result-001.json result-002.json --visual-review visual-review.json --output question-index.json
+python scripts/compact_analysis.py summary --index question-index.json --target "高考" --examples 2 --output summary.json
 ```
 
-prepare 的 stdout 顯示實際 batch_id。work 是本機完整登錄，不要整份放入模型上下文。packet 只包含當批圖片、source ID、角色、主題表及必要指令；宿主須實際開圖，不把圖片路徑當圖片內容。每批結果獨立落盤，不在聊天中重述全部題目。
+prepare 的 stdout 顯示實際 batch_id；`status` 列出待處理批次與已完成快取，長流程不必讀完整 work.json。`merge --visual-review` 會用宿主實際開圖紀錄核對 page／image 雜湊，這是指定 `checked` 的唯一可靠來源；`--require-complete` 可在交付前拒絕 partial。`summary --target` 只改變統計目標，不會重跑 AI。
+
+work 是本機完整登錄，不要整份放入模型上下文。packet 只包含當批圖片、source ID、角色、主題表及必要規則；宿主須實際開圖，不把圖片路徑當圖片內容。每批結果獨立落盤，不在聊天中重述全部題目。packet 的 `rules` 包含資料與指令的邊界、答案頁不可當題、跨頁與 `reviewed_pages` 規則；`target_exam` 不會放進 packet，避免模型只分類目標考試。
 
 ## AI 精簡回覆
 
 ```json
 {"results":[{"source":"S實際來源ID","reviewed_pages":[1,2],"questions":[
-  {"p":1,"q":"1","r":"r","t":["TREE"]},
+  {"p":1,"q":"1","r":"r","t":["TREE"],"sample":"樹插入"},
   {"p":1,"q":"2","r":"i","t":[]},
   {"p":2,"q":"3(1)","r":"c","t":["TREE"],"why":"索引與樹結構交叉"},
   {"p":2,"q":"4","r":"u","t":[],"why":"圖中符號無法辨識"}
@@ -43,25 +46,26 @@ prepare 的 stdout 顯示實際 batch_id。work 是本機完整登錄，不要�
 ```
 
 - source 複製 packet 的 ID；p 是起始 PDF 頁，q 保留印刷題號／子題號；r/c/i/u 是相關／交叉／不相關／待確認，t 是主題 ID。
-- 跨頁題加 pages，例如 `[2,3]`；父題拆成子題時加 `count:false`，子題 count 預設 true。
-- 交叉與待確認題需 why；一般題不必寫理由。爭議排除也可加 why。
+- 跨頁題加 pages，例如 `[2,3]`；父題拆成子題時加 `count:false`，子題 count 預設 true。若續頁在另一個批次，必須在讀完續頁的那一批重新輸出完整題目；merge 不會只因為 `reviewed_pages` 的聯集就標 checked。
+- 交叉與待確認題需 why；一般題不必寫理由。爭議排除也可加 why。why 與 sample 都有長度上限，避免把全文塞進精簡欄位。
 - sample 為可選短代表題摘要，僅少量代表題提供，不抄錄全文。
-- reviewed_pages 只列實際看清且已盤點完整的頁面；跨頁題尚未完成先不要標該頁完成。空白／答案頁可標完成但 questions 為空；答案不可當新題目。
+- reviewed_pages 只列實際看清且已盤點完整的頁面；答案頁可標完成但 questions 為空；答案不可當新題目。
+- 可選 `answers` 記錄官方答案配對（source／p／q／role／basis），由 merge 補成 `answer_refs`；可選 `duplicate_of` 標記疑似相同題，由 merge 補成 `duplicate_candidates`，不自動合併。`score` 為可選非負數字，僅在來源確有配分時提供，summary 不自動推算占比。
 - 無視覺時 reviewed_pages 留空，文字暫判可填 questions，但不計入已確認主統計。不可判讀題以 u 及 why 揭露。
-- 另存 visual-review.json 的能力與頁面觀察；工具不能證明宿主真的看過圖片。答案版本衝突記入既有觀察及報告，不建立虛構題目。
+- 另存 visual-review.json 的能力與頁面觀察；merge 會核對實際圖片雜湊。工具不能證明模型真的看過圖片，`host_vision.available` 必須是 true 才能標 checked。未提供 visual-review 時 merge 仍可作相容分析，但會加 warning，正式報告應補實際開圖證據。
 
 ## 統計與快取
 
-merge 補回完整來源、圖片證據、長題目 ID 與判讀狀態；相同題號、起始頁及來源的完全相同結果去重，衝突拒絕合併。同題來源與內容不能靠相似字串強行合併。
+merge 補回完整來源、圖片證據、長題目 ID 與判讀狀態；相同題號、起始頁及來源的完全相同結果去重，衝突拒絕合併。同題來源與內容不能靠相似字串強行合併。merge 也會用 visual-review 的實際圖片證據覆寫 image_evidence，並把 `unreadable` 頁面維持在 partial。
 
-summary 只計 countable、completed 的相關／交叉題；多標籤不重複增加總題數。指定目標考試時主統計採精確篩選，其他題列補充數量；保留年度／考試分層，不猜獨立命題事件。報告只讀統計與每主題最多 2 題代表來源。
+summary 只計 countable、completed 的相關／交叉題；多標籤不重複增加總題數。指定目標考試時主統計採精確篩選，其他題列補充數量；保留年度／考試分層。未建立命題事件對應時 `event_count` 為 null，不以分層推估。報告只讀統計與每主題最多 2 題代表來源。
 
 ```shell
 python scripts/compact_analysis.py prepare --inventory new-inventory.json --selection new-selection.json --render-index new-render-index.json --topics topics.json --prior question-index.json --output new-work.json
 ```
 
-來源、圖片、備考科目、目標、分類表及版本一致，且整卷已核對並無待確認題，才跳過 AI。新增試卷只新增工作；修改報告格式只重跑 summary 與寫報告。全數命中時用 `{"results":[]}` 作空結果檔供 merge 使用。
+來源、圖片、備考科目、分類表及分類版本一致，且整卷已核對並無待確認題，才跳過 AI。新增試卷只新增工作；修改報告格式或目標考試只重跑 summary 與寫報告。全數命中時可省略 `--results`（或使用 `{"results":[]}` 空結果檔）。
 
-快取以整份 PDF 為單位。部分完成、待確認題、重繪圖片都保守重跑該卷；變更分類表／目標則全部失效，不假裝已實現單題差異重算。沒有 compact cache 的舊索引須先完成一次新流程。prepare 後來源或圖片變更，merge 拒絕沿用。
+快取以整份 PDF 為單位，analysis key 只包含備考科目、分類表、分類版本、protocol、PDF 與圖片雜湊及來源角色；目標考試、年度、考試名稱、官方科目等報告 metadata 不參與快取，修正或補登時不必重跑 AI。部分完成、待確認題、重繪圖片仍保守重跑該卷；變更分類表／分類版本則全部失效，不假裝已實現單題差異重算。沒有 compact cache 的舊索引須先完成一次新流程。prepare 後來源或圖片變更，merge 拒絕沿用。
 
 先用 10～20 頁記錄實際 usage 與耗時比較。宿主不提供 usage 時只能報文字字元／位元組變化，不能冒充 Token；圖片成本不會因 JSON 變短而消失。

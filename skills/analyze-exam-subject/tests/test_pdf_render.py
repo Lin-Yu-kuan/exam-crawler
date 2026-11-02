@@ -7,7 +7,14 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from PIL import Image, ImageDraw
+try:
+    from PIL import Image, ImageDraw
+    HAS_PIL = True
+except ImportError:  # pragma: no cover - 只影響沒有 Pillow 的環境
+    Image = None
+    ImageDraw = None
+    HAS_PIL = False
+
 from pypdf import PdfWriter
 from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject, NumberObject
 
@@ -56,7 +63,7 @@ def mixed_fixture(path: Path) -> None:
     writer.write(path)
 
 
-@unittest.skipUnless(HAS_PDFIUM, "缺少 pypdfium2，未執行實際渲染測試")
+@unittest.skipUnless(HAS_PDFIUM and HAS_PIL, "缺少 pypdfium2 或 Pillow，未執行實際渲染測試")
 class RenderTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
@@ -177,6 +184,43 @@ class RenderTests(unittest.TestCase):
         self.assertTrue(rows[0]["reused"])
         self.assertFalse(rows[1]["reused"])
         self.assertEqual(resumed["status"], "rendered")
+
+    def test_resume_preserves_unvisited_pages_and_reuses_images(self) -> None:
+        first = self.run_render()
+        images = sorted((self.output.parent / "render-images").glob("*.png"))
+        Path(first["documents"][0]["pages"][1]["image_path"]).write_bytes(b"corrupt")
+        original = renderer.render_page
+
+        def interrupt(pdf: object, number: int, *args: object) -> dict:
+            if number == 2:
+                raise KeyboardInterrupt()
+            return original(pdf, number, *args)
+
+        with patch.object(renderer, "render_page", side_effect=interrupt):
+            with self.assertRaises(KeyboardInterrupt):
+                self.run_render(resume_path=self.output)
+        partial = tool.read_json(self.output)
+        self.assertEqual(partial["status"], "in_progress")
+        self.assertEqual([row["page"] for row in partial["documents"][0]["pages"]], [1, 2, 3, 4, 5, 6])
+        self.assertEqual(len(sorted((self.output.parent / "render-images").glob("*.png"))), len(images))
+        resumed = self.run_render(resume_path=self.output)
+        rows = resumed["documents"][0]["pages"]
+        self.assertEqual(len(rows), 6)
+        self.assertTrue(rows[0]["reused"])
+        self.assertFalse(rows[1]["reused"])
+        self.assertTrue(all(row["reused"] for row in rows[2:]))
+
+    def test_same_output_rejects_scope_or_config_change(self) -> None:
+        self.run_render()
+        with self.assertRaises(ValueError):
+            renderer.render_pdf(self.data, self.selection, [1], self.output, resume_path=self.output)
+        with self.assertRaises(ValueError):
+            renderer.render_pdf(self.data, self.selection, None, self.output, dpi=300, resume_path=self.output)
+
+    def test_explicit_150_dpi_reuses_default_cache(self) -> None:
+        self.run_render()
+        again = renderer.render_pdf(self.data, self.selection, None, self.output, dpi=150, resume_path=self.output)
+        self.assertTrue(all(row["reused"] for row in again["documents"][0]["pages"]))
 
     def test_cli_and_unsupported_resume(self) -> None:
         import subprocess

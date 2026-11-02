@@ -151,6 +151,45 @@ class FileTests(unittest.TestCase):
             self.skipTest(f"環境不允許建立符號連結：{exc}")
         self.assertEqual(tool.inventory(self.root)["files"], [])
 
+    def test_safe_name_and_unique_run_directory(self) -> None:
+        self.assertEqual(tool.safe_name("CON"), "_CON")
+        self.assertNotIn("/", tool.safe_name("a/b:c*"))
+        self.assertEqual(tool.safe_name(".."), "未命名科目")
+        self.assertEqual(tool.safe_name("   "), "未命名科目")
+        first = tool.run_dir(self.root, "資料/結構")
+        second = tool.run_dir(self.root, "資料/結構")
+        self.assertTrue(first.is_dir())
+        self.assertTrue(second.is_dir())
+        self.assertNotEqual(first, second)
+        self.assertEqual(first.parent.parent, self.root / "_analysis")
+
+    def test_write_new_is_atomic_and_rejects_existing(self) -> None:
+        output = self.root / "out.json"
+        tool.write_new(output, {"a": 1})
+        before = output.read_bytes()
+        with self.assertRaises(FileExistsError):
+            tool.write_new(output, {"a": 2})
+        self.assertEqual(output.read_bytes(), before)
+        self.assertEqual(list(self.root.glob("*.tmp")), [])
+
+    def test_write_new_rejects_symlink_output(self) -> None:
+        target = self.root / "target.json"
+        link = self.root / "link.json"
+        try:
+            link.symlink_to(target)
+        except OSError as exc:
+            self.skipTest(f"環境不允許建立符號連結：{exc}")
+        with self.assertRaises(ValueError):
+            tool.write_new(link, {"a": 1})
+        self.assertFalse(target.exists())
+
+    def test_extract_resume_rejects_render_index(self) -> None:
+        pdf(self.root / "試題.pdf")
+        data = tool.inventory(self.root)
+        selected = self.selection(data)
+        with self.assertRaises(ValueError):
+            tool.extract(data, selected, [1], {"schema_version": 1, "kind": "exam-render-index"})
+
 
 if __name__ == "__main__":
     unittest.main()

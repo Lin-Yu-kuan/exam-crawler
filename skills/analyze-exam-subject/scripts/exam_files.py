@@ -157,7 +157,7 @@ def extract(data: dict[str, Any], selection: dict[str, Any] | None,
     except ImportError as exc:
         raise ValueError("缺少 pypdf；請在選定環境執行 python -m pip install pypdf") from exc
     root, chosen = select_sources(data, selection, pages)
-    if resume is not None and resume.get("schema_version") != 1:
+    if resume is not None and (resume.get("schema_version") != 1 or resume.get("kind") is not None):
         raise ValueError("resume 不是支援的擷取索引")
     config = {"tool_version": TOOL_VERSION, "pypdf_version": pypdf.__version__, "page_scope": pages}
     cache = {}
@@ -220,7 +220,11 @@ def run_dir(root: Path, subject: str) -> Path:
     root = root.resolve(strict=True)
     if not root.is_dir():
         raise ValueError("來源必須是資料夾")
-    base = root / "_analysis" / safe_name(subject)
+    analysis_root = root / "_analysis"
+    base = analysis_root / safe_name(subject)
+    for directory in (analysis_root, base):
+        if directory.exists() and linked(directory):
+            raise ValueError("輸出目錄不可為連結")
     for _ in range(5):
         candidate = base / f"{datetime.now():%Y%m%d-%H%M%S}-{secrets.token_hex(3)}"
         try:

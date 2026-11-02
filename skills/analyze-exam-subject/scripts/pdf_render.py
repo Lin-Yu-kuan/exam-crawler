@@ -239,6 +239,14 @@ def render_pdf(data: dict[str, Any], selection: dict[str, Any] | None,
                     _put_page(doc, row)
                     checkpoint(output, result)
                 doc["pages"].sort(key=lambda row: row.get("page", 0))
+                seen_pages: set[Any] = set()
+                unique_pages = []
+                for row in doc["pages"]:
+                    if row.get("page") in seen_pages:
+                        continue
+                    seen_pages.add(row.get("page"))
+                    unique_pages.append(row)
+                doc["pages"] = unique_pages
                 expected = len(pdf) if pages is None else len(pages)
                 doc["status"] = "rendered" if len(doc["pages"]) == expected and all(
                     row["status"] == "rendered" for row in doc["pages"]) else "partial"

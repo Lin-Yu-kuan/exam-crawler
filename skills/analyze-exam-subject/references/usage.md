@@ -1,6 +1,6 @@
 # 安裝與工具使用
 
-大量題庫預設採 [精簡考點分析](compact-analysis.md)，另有純標準函式庫的 `scripts/compact_analysis.py` 提供 prepare／packet／merge／summary。AI 不重複填寫來源欄位，統計與分析快取在本機處理；原有 inventory／extract／render 介面保持相容。
+大量題庫預設採 [精簡考點分析](compact-analysis.md)，另有純標準函式庫的 `scripts/compact_analysis.py` 提供 prepare／packet／status／merge／summary。AI 不重複填寫來源欄位，統計與分析快取在本機處理；原有 inventory／extract／render 介面保持相容。
 
 ## 安裝
 
@@ -13,9 +13,19 @@
 
 ## 環境
 
-Python 3.10+；盤點只用標準函式庫。PDF 擷取需要 pypdf。缺少時，先提示使用者在選定環境執行 `python -m pip install pypdf`，不靜默安裝。無 OCR 引擎或宿主視覺能力時，掃描頁只能回報待視覺檢查。所有命令中的路徑請加引號；以下以技能資料夾為目前目錄。
+Python 3.10+；盤點只用標準函式庫。PDF 擷取需要 pypdf。缺少時，先提示使用者在選定環境執行 `python -m pip install pypdf`，不靜默安裝。無 OCR 引擎或宿主視覺能力時，掃描頁只能回報待視覺檢查。所有命令中的路徑請加引號；以下以技能資料夾為目前目錄。完整依賴見 [`requirements.txt`](../requirements.txt)：`pypdf>=6,<7`、`pypdfium2>=5,<6`、`Pillow>=10.1`。
 
 逐頁圖片功能需要 `pypdfium2` 與 `Pillow`；缺少時提示 `python -m pip install pypdfium2 Pillow`，不自動安裝。圖片產生不需要視覺模型；判讀需要宿主實際提供圖片工具。無視覺時保留文字分析與待檢視圖片，不使用外部 OCR API。參閱 [視覺檢查及 render 指令](visual-review.md)。
+
+## 執行目錄
+
+先建立唯一目錄，避免不同次分析互相覆寫；命令會印出實際路徑，後續輸出都放在該目錄：
+
+```shell
+python scripts/exam_files.py run-dir "D:/題庫" --subject "資料結構"
+```
+
+工具會清理 `<>:"/\|?*`、控制字元、尾端句點與 Windows 保留名稱（`CON`、`NUL`、`COM1` 等），並使用時間戳加隨機碼。輸出根目錄固定在來源的 `_analysis` 下。
 
 ```shell
 python scripts/exam_files.py inventory "D:/題庫" --output "D:/題庫/_analysis/盤點/inventory.json"
@@ -24,11 +34,25 @@ python scripts/exam_files.py extract --inventory "D:/題庫/_analysis/盤點/inv
 python scripts/exam_files.py extract --inventory "D:/題庫/_analysis/盤點/inventory.json" --selection "D:/題庫/_analysis/資料結構/本次/selection.json" --output "D:/題庫/_analysis/資料結構/本次/extraction.json"
 ```
 
-`--pages` 為一基頁碼，以逗號分隔，例如 `1,2`；未提供代表全文。未提供 selection 時只允許首頁預覽，防止選取前擷取全部試卷。輸出必須是不存在的新檔，不覆寫來源。`--resume` 接受先前的 extraction.json，重用合格結果但仍輸出到新檔。
-
-以上輸出與 resume 規則適用 extract。render 的 --resume 接受 render-index.json，允許恢復同一索引；圖片不覆寫，逐頁進度原子保存。文字與渲染索引不可混用。
+`--pages` 為一基頁碼，以逗號分隔，例如 `1,2`；未提供代表全文。未提供 selection 時只允許首頁預覽，防止選取前擷取全部試卷。輸出以暫存檔原子發佈，必須是不存在的新檔，不覆寫來源。`--resume` 接受先前的 extraction.json，重用合格結果但仍輸出到新檔；render 的 `--resume` 接受 render-index.json，同一個 output 只允許相同選取、相同頁碼範圍與相同渲染設定恢復，否則請使用新輸出。圖片不覆寫，逐頁進度原子保存。文字與渲染索引不可混用。
 
 盤點檔案讀取失敗、資料夾存取失敗與未知 manifest 會列入 warnings；PDF 失敗會逐檔回報，其他檔案繼續。命令成功不表示所有 PDF 都成功，應檢查每筆 status。
+
+## 精簡分析
+
+先完成 selection 與 render。`prepare` 會檢查每個已選來源都有 render 索引、至少一頁可用；缺頁只會產生 warning 與 `missing_pages`，不會靜默假裝完整。`--no-cache` 可強制重跑，`--prior` 則重用完整快取。
+
+```shell
+python scripts/compact_analysis.py prepare --inventory inventory.json --selection selection.json --render-index render-index.json --topics topics.json --output work.json
+python scripts/compact_analysis.py status --work work.json
+python scripts/compact_analysis.py packet --work work.json --batch-id "S來源短ID-1" --output packet-001.json
+python scripts/compact_analysis.py merge --work work.json --results result-001.json --visual-review visual-review.json --output question-index.json
+python scripts/compact_analysis.py summary --index question-index.json --target "高考" --output summary.json
+```
+
+`merge --visual-review` 會核對 `source_sha256`、頁碼與圖片雜湊；`host_vision.available` 不是 true 時不得有 checked 頁。`--results` 可接受多個檔案；全部命中快取時可省略。`--require-complete` 會在結果仍為 partial 時失敗，適合正式交付前檢查。`summary --target` 只改變統計目標，不會重跑 AI；改目標考試或來源年度也不再使分析快取失效。
+
+`work.json` 的 `config_hash` 只涵蓋分析設定（備考科目、分類表、分類版本、protocol）；來源 cache_key 另含 PDF／圖片雜湊與來源角色。`target_exam`、年度、考試名稱等只影響報告統計，不影響分類快取。`question-index` 使用 schema 3，`summary` 使用 schema 2；`source_status` 為每個路徑的狀態列表。
 
 ## Manifest 邊界
 
@@ -38,6 +62,6 @@ metadata 只在附件 SHA-256 與實際檔案相符時掛載，保留各 snapsho
 
 ## 驗證
 
-在有 pypdf 的環境執行 `python -m unittest discover -s tests -v`。測試使用自行產生的 PDF，不讀取使用者試卷。`tests/behavior-cases.md` 提供宿主 AI 人工驗收案例；腳本測試不能證明語意分類正確。
+在有 pypdf、pypdfium2 與 Pillow 的環境執行 `python -m unittest discover -s tests -v`。渲染測試會在缺少 pypdfium2 或 Pillow 時 skip，不會讓整個測試模組 ImportError。測試使用自行產生的 PDF，不讀取使用者試卷。`tests/behavior-cases.md` 提供宿主 AI 人工驗收案例；腳本測試不能證明語意分類正確。
 
 目前驗證結果與尚未完成的雙平台測試見 [驗證紀錄](../tests/validation.md)。
