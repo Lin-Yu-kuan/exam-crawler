@@ -15,6 +15,11 @@ import time
 import zipfile
 from pathlib import Path
 
+# 確保專案根目錄在 sys.path 中，防範在任何目錄或雲端直接以 streamlit run app/ui/web_app.py 啟動時發生 ModuleNotFoundError
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
+
 import streamlit as st
 
 from app.crawler.moex_client import MoexClient
