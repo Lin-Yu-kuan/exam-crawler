@@ -147,6 +147,15 @@ class AppController:
         )
         return snapshot
 
+    def recent_query_specs(self, limit: int = 10) -> tuple[QuerySpec, ...]:
+        """讀取歷史查詢條件（供介面快速選取回填）。"""
+        if self._store is None or not hasattr(self._store, "list_recent_specs"):
+            return ()
+        try:
+            return self._store.list_recent_specs(limit=limit)
+        except Exception:
+            return ()
+
 
     # --- 多向互相收斂選取 ---------------------------------------------
     def faceted_candidates(self) -> CandidateSets:

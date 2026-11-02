@@ -343,6 +343,33 @@ class ManifestStore:
         with self._connection() as conn:
             return int(conn.execute("SELECT COUNT(*) FROM snapshots").fetchone()[0])
 
+    def list_recent_specs(self, limit: int = 15) -> tuple[QuerySpec, ...]:
+        """取出最近查詢過的歷史條件（去重，最新在前）。"""
+        with self._connection() as conn:
+            rows = conn.execute(
+                "SELECT spec_json FROM snapshots ORDER BY acquired_at DESC"
+            ).fetchall()
+        seen: set[tuple] = set()
+        result: list[QuerySpec] = []
+        for row in rows:
+            try:
+                spec_dict = json.loads(row["spec_json"])
+                key = (
+                    spec_dict.get("start_year"),
+                    spec_dict.get("end_year"),
+                    spec_dict.get("exam_name_keyword", ""),
+                    spec_dict.get("category_keyword", ""),
+                    spec_dict.get("subject_keyword", ""),
+                )
+                if key not in seen:
+                    seen.add(key)
+                    result.append(QuerySpec(**spec_dict))
+                    if len(result) >= limit:
+                        break
+            except Exception:
+                continue
+        return tuple(result)
+
     # --- 附件狀態 -----------------------------------------------------
     def get_attachment(self, asset_id: str) -> AttachmentRow | None:
         with self._connection() as conn:

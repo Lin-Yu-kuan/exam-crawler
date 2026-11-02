@@ -217,18 +217,77 @@ def _render_reconcile(controller: AppController) -> None:
         )
 
 
+def _format_spec_label(spec: QuerySpec) -> str:
+    """將 QuerySpec 轉成白話好懂的摘要標籤。"""
+    year_str = f"{spec.start_year}年" if spec.start_year == spec.end_year else f"{spec.start_year}–{spec.end_year}年"
+    filters = []
+    if spec.exam_name_keyword:
+        filters.append(f"考試：{spec.exam_name_keyword}")
+    if spec.category_keyword:
+        filters.append(f"類科：{spec.category_keyword}")
+    if spec.subject_keyword:
+        filters.append(f"科目：{spec.subject_keyword}")
+    filter_str = "、".join(filters) if filters else "整年度全部考科"
+    return f"{year_str}｜{filter_str}"
+
+
 def _render_query(controller: AppController) -> None:
+    recent_specs = controller.recent_query_specs()
+
+    if recent_specs:
+        history_options = ["（點選歷史條件自動帶入…）"] + [_format_spec_label(s) for s in recent_specs]
+        selected_history = st.selectbox(
+            "最近查詢(自動帶入下方篩選條件)",
+            options=history_options,
+            index=0,
+            key="history-selector",
+        )
+        if selected_history != "（點選歷史條件自動帶入…）":
+            idx = history_options.index(selected_history) - 1
+            chosen_spec = recent_specs[idx]
+            st.session_state["q_start"] = chosen_spec.start_year
+            st.session_state["q_end"] = chosen_spec.end_year
+            st.session_state["q_exam"] = chosen_spec.exam_name_keyword or ""
+            st.session_state["q_category"] = chosen_spec.category_keyword or ""
+            st.session_state["q_subject"] = chosen_spec.subject_keyword or ""
+            st.session_state["q_full"] = not bool(chosen_spec.exam_name_keyword or chosen_spec.category_keyword or chosen_spec.subject_keyword)
+
     with st.form("query-form"):
         col1, col2 = st.columns(2)
-        start = col1.number_input("年度（起，民國）", min_value=81, max_value=115, value=113)
-        end = col2.number_input("年度（迄，民國）", min_value=81, max_value=115, value=113)
+        start = col1.number_input(
+            "年度（起，民國）",
+            min_value=81,
+            max_value=115,
+            value=st.session_state.get("q_start", 113),
+            key="q_start",
+        )
+        end = col2.number_input(
+            "年度（迄，民國）",
+            min_value=81,
+            max_value=115,
+            value=st.session_state.get("q_end", 113),
+            key="q_end",
+        )
         col_exam, col_category, col_subject = st.columns(3)
-        exam_keyword = col_exam.text_input("考試名稱關鍵字（可留空）", "")
-        category_keyword = col_category.text_input("類科關鍵字（可留空）", "")
-        subject_keyword = col_subject.text_input("科目關鍵字（可留空）", "")
+        exam_keyword = col_exam.text_input(
+            "考試名稱關鍵字（可留空）",
+            value=st.session_state.get("q_exam", ""),
+            key="q_exam",
+        )
+        category_keyword = col_category.text_input(
+            "類科關鍵字（可留空）",
+            value=st.session_state.get("q_category", ""),
+            key="q_category",
+        )
+        subject_keyword = col_subject.text_input(
+            "科目關鍵字（可留空）",
+            value=st.session_state.get("q_subject", ""),
+            key="q_subject",
+        )
         full_fetch = st.checkbox(
             "不套用關鍵字，抓整年度全部考科",
-            value=False,
+            value=st.session_state.get("q_full", False),
+            key="q_full",
             help=(
                 "勾選後會忽略上面三個關鍵字，直接向考選部下載整年度資料"
                 "（113 年約 3,566 筆、6 MB、約 11 秒）。候選清單最完整，但比較慢；"
@@ -270,14 +329,9 @@ def _render_query(controller: AppController) -> None:
 
     stamp = "（快取）" if snapshot.cached else "（本次查詢）"
     st.write(
-        f"取得時間：{snapshot.acquired_at}{stamp}｜狀態：**{snapshot.status.value}**"
-        f"｜紀錄 {len(snapshot.records)} 筆"
+        f"**{controller.query_scope_text()}** {stamp}｜"
+        f"取得 {len(snapshot.records)} 筆紀錄、{len(snapshot.years)} 個年度"
     )
-    st.caption(f"查詢範圍：{controller.query_scope_text()}")
-    if not snapshot.is_complete:
-        st.error(f"{snapshot.message}；已停用批量下載，請重試或縮小條件。")
-    elif snapshot.status is ParseStatus.OK_WITH_DIFF:
-        st.warning(f"{snapshot.message}；下載仍可使用，但請確認統計差異是否可接受。")
     for warning in snapshot.warnings[:5]:
         st.warning(warning)
 
@@ -382,7 +436,12 @@ def _render_task(controller: AppController, auto_refresh: bool) -> None:
             st.success(f"已建立任務 {state.task_id}")
             st.rerun()
     if disabled:
-        st.caption("需先取得完整快照，且三個候選清單都至少選取一項。")
+        if controller.snapshot is None:
+            st.caption("💡 請先點擊上方的「開始過濾」取得試題清單。")
+        elif not controller.snapshot.is_complete:
+            st.caption("💡 試題清單未完整取得，請重新點擊「開始過濾」。")
+        else:
+            st.caption("💡 目前未選取任何考科，請在上方勾選欲下載的科目。")
 
     state = controller.progress()
     if state is None:
@@ -428,6 +487,10 @@ def _render_task(controller: AppController, auto_refresh: bool) -> None:
 
 def main() -> None:
     st.set_page_config(page_title="國考刷題神器", layout="wide")
+    st.markdown(
+        "<style>[data-testid='stDeployButton'] { display: none !important; }</style>",
+        unsafe_allow_html=True,
+    )
     st.title("國考刷題神器")
     st.caption("考選部考畢試題查詢、篩選與歸檔（本機執行，預設僅監聽 localhost）")
 
