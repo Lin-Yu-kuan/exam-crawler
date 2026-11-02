@@ -14,7 +14,7 @@ import streamlit as st
 from app.crawler.moex_client import MoexClient
 from app.crawler.rate_limiter import RateLimitConfig, RateLimiter
 from app.engine.downloader import Downloader
-from app.engine.path_builder import PathMode
+from app.engine.path_builder import DEFAULT_TEMPLATES, PathMode
 from app.engine.query_service import QueryService
 from app.engine.task_service import DEFAULT_WORKERS, MAX_WORKERS, MIN_WORKERS, TaskService
 from app.models import ParseStatus, QuerySpec, TaskStatus
@@ -93,6 +93,39 @@ def _ensure_controller(settings: dict) -> AppController:
     return st.session_state["controller"]
 
 
+
+SAMPLE_VARS = {
+    "年度": "113",
+    "年度標籤": "113年",
+    "考試名稱": "高考三級考試",
+    "考試簡稱": "高考三級",
+    "類科": "資訊處理",
+    "科目": "資料結構",
+    "等別": "三等",
+    "題型類別": "申論題",
+    "題型": "申論試題",
+}
+
+
+def build_tree_preview(root_dir: str, template: str) -> str:
+    """根據模板與範例變數生成目錄結構樹狀文字。"""
+    try:
+        rendered = template
+        for key, val in SAMPLE_VARS.items():
+            rendered = rendered.replace(f"{{{key}}}", val)
+        segments = [s for s in rendered.split("/") if s]
+    except Exception:
+        segments = ["範例_申論試題.pdf"]
+
+    lines = [f"📁 {root_dir}/"]
+    for i, seg in enumerate(segments):
+        indent = "  " * (i + 1)
+        is_last = (i == len(segments) - 1)
+        icon = "📄" if is_last else "📁"
+        lines.append(f"{indent}└── {icon} {seg}")
+    return "\n".join(lines)
+
+
 def _sidebar() -> tuple[dict, bool]:
     with st.sidebar:
         st.subheader("下載設定")
@@ -100,12 +133,60 @@ def _sidebar() -> tuple[dict, bool]:
         db_path = st.text_input("資料庫檔案", str(Path(root) / "manifest.db"))
         workers = st.slider("下載併發數", MIN_WORKERS, MAX_WORKERS, DEFAULT_WORKERS)
         mode_label = st.selectbox("歸檔模式", list(MODE_LABELS))
+        mode = MODE_LABELS[mode_label]
         template = ""
-        if MODE_LABELS[mode_label] is PathMode.D:
-            template = st.text_input(
-                "自訂模板（須以 {題型}.pdf 結尾）",
-                "{年度}/{考試名稱}_{類科}/{科目}_{題型}.pdf",
-            )
+
+        if mode is PathMode.D:
+            with st.container(border=True):
+                st.markdown("##### 📁 自訂目錄結構")
+                depth = st.radio(
+                    "目錄層次",
+                    ["雙層資料夾", "單層資料夾", "平鋪（無資料夾）"],
+                    horizontal=True,
+                    key="custom-depth",
+                )
+
+                folder_options = {
+                    "年度 (例: 113)": "{年度}",
+                    "科目 (例: 資料結構)": "{科目}",
+                    "考試名稱 (例: 高考三級)": "{考試簡稱}",
+                    "類科 (例: 資訊處理)": "{類科}",
+                }
+                subfolder_options = {
+                    "考試＋類科 (例: 高考三級_資訊處理)": "{考試簡稱}_{類科}",
+                    "類科 (例: 資訊處理)": "{類科}",
+                    "科目 (例: 資料結構)": "{科目}",
+                    "年度 (例: 113)": "{年度}",
+                }
+
+                folders = []
+                if depth in ("雙層資料夾", "單層資料夾"):
+                    c1 = st.selectbox("第一層分類", list(folder_options.keys()), index=0, key="c-l1")
+                    folders.append(folder_options[c1])
+
+                if depth == "雙層資料夾":
+                    c2 = st.selectbox("第二層分類", list(subfolder_options.keys()), index=0, key="c-l2")
+                    folders.append(subfolder_options[c2])
+
+                fn_items = st.multiselect(
+                    "檔名包含欄位（依順序串接）",
+                    ["年度", "考試簡稱", "類科", "科目"],
+                    default=["科目"],
+                    key="c-fn",
+                )
+                fn_tokens = [f"{{{item}}}" for item in (fn_items or [])]
+                fn_prefix = "_".join(fn_tokens)
+                filename = f"{fn_prefix}_{{題型}}.pdf" if fn_prefix else "{題型}.pdf"
+                template = "/".join(folders + [filename])
+
+                st.caption("即時目錄樹狀圖預覽：")
+                st.code(build_tree_preview(root, template), language="text")
+        else:
+            with st.container(border=True):
+                template = DEFAULT_TEMPLATES[mode.name]
+                st.caption("即時目錄樹狀圖預覽：")
+                st.code(build_tree_preview(root, template), language="text")
+
         auto_refresh = st.checkbox("下載時自動更新進度", value=True)
         st.caption("本工具只在本機執行；查詢與下載需要網路。")
     return (
@@ -113,8 +194,8 @@ def _sidebar() -> tuple[dict, bool]:
             root=root,
             db_path=db_path,
             workers=workers,
-            mode=MODE_LABELS[mode_label],
-            template=template or None,
+            mode=mode,
+            template=template if mode is PathMode.D else None,
         ),
         auto_refresh,
     )
