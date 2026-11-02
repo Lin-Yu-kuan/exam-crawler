@@ -43,7 +43,9 @@ DIMENSION_LABELS = {"exams": "考試", "categories": "類科", "subjects": "科�
 
 #: 控制器對外介面版本；UI 以此判斷 session 內的實例是否過期（熱重載後必須重建）。
 #: 只要新增／修改 AppController 的公開方法就必須 +1。
-CONTROLLER_API_VERSION = 4
+CONTROLLER_API_VERSION = 5
+EXPECTED_TASK_SERVICE_API_VERSION = 1
+RESTART_REQUIRED_MESSAGE = "程式已更新，請重新啟動應用程式後重新查詢及下載"
 
 
 class QueryServiceProtocol(Protocol):
@@ -59,6 +61,8 @@ class QueryServiceProtocol(Protocol):
 
 
 class TaskServiceProtocol(Protocol):
+    api_version: int
+
     def export_results(self, task_id: str) -> tuple[DownloadResult, ...]:
         ...
 
@@ -116,6 +120,15 @@ class AppController:
         self._reconciled = False
         self._candidates_cache: tuple[tuple, CandidateSets] | None = None
         self.active_filters: dict[str, set[str] | None] = {dimension: None for dimension in DIMENSIONS}
+        if not self.task_service_compatible():
+            self.last_error = RESTART_REQUIRED_MESSAGE
+
+    def task_service_compatible(self) -> bool:
+        """檢查實際服務實例，不能僅依控制器版本判定。"""
+        return (
+            getattr(self._task_service, "api_version", None) == EXPECTED_TASK_SERVICE_API_VERSION
+            and callable(getattr(self._task_service, "export_results", None))
+        )
 
     # --- 查詢 ---------------------------------------------------------
     def query(
@@ -368,6 +381,8 @@ class AppController:
         return "｜".join(parts)
 
     def can_download(self) -> bool:
+        if not self.task_service_compatible():
+            return False
         if self.snapshot is None or not self.snapshot.is_complete or self.state is None:
             return False
         return can_download(self.state, self.stats())
@@ -408,6 +423,9 @@ class AppController:
     def start_download(self) -> TaskState | None:
         """開始下載；重複點擊不會建立第二個任務。"""
         self.last_error = None
+        if not self.task_service_compatible():
+            self.last_error = RESTART_REQUIRED_MESSAGE
+            return None
         if self.snapshot is None or self.state is None:
             self.last_error = "請先完成查詢"
             return None
@@ -453,6 +471,8 @@ class AppController:
 
     def export_paths(self) -> tuple[str, ...]:
         """依任務成果匯出，不使用目前畫面上的篩選條件。"""
+        if not self.task_service_compatible():
+            raise TaskServiceError(RESTART_REQUIRED_MESSAGE)
         if self.task_id is None:
             return ()
         results = self._task_service.export_results(self.task_id)
@@ -470,6 +490,9 @@ class AppController:
             return None
 
     def retry(self) -> TaskState | None:
+        if not self.task_service_compatible():
+            self.last_error = RESTART_REQUIRED_MESSAGE
+            return None
         if self.task_id is None or self.snapshot is None:
             return None
         try:

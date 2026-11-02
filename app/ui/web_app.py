@@ -164,30 +164,35 @@ def build_controller(
     )
 
 
-EXPECTED_CONTROLLER_API_VERSION = 4
+EXPECTED_CONTROLLER_API_VERSION = 5
+EXPECTED_TASK_SERVICE_API_VERSION = 1
+RESTART_REQUIRED_MESSAGE = "程式已更新，請重新啟動應用程式後重新查詢及下載"
 
 
-def _reload_submodules_if_needed() -> None:
-    """當子模組在開發期間更新但 Streamlit 僅重跑 web_app.py 時，強制重新載入子模組。"""
-    global CONTROLLER_API_VERSION, AppController
-    if getattr(AppController, "api_version", None) != EXPECTED_CONTROLLER_API_VERSION:
-        import importlib
-        import app.engine.filter as filter_mod
-        import app.ui.controller as ctrl_mod
-
-        importlib.reload(filter_mod)
-        importlib.reload(ctrl_mod)
-        CONTROLLER_API_VERSION = ctrl_mod.CONTROLLER_API_VERSION
-        AppController = ctrl_mod.AppController
+def _require_compatible_runtime(controller=None) -> None:
+    """不重載背景工作使用的模組；版本不符時停止本次畫面執行。"""
+    compatible = (
+        getattr(AppController, "api_version", None) == EXPECTED_CONTROLLER_API_VERSION
+        and getattr(TaskService, "api_version", None) == EXPECTED_TASK_SERVICE_API_VERSION
+        and callable(getattr(TaskService, "export_results", None))
+    )
+    if controller is not None:
+        service = getattr(controller, "_task_service", None)
+        compatible = compatible and (
+            getattr(controller, "api_version", None) == EXPECTED_CONTROLLER_API_VERSION
+            and callable(getattr(controller, "export_paths", None))
+            and getattr(service, "api_version", None) == EXPECTED_TASK_SERVICE_API_VERSION
+            and callable(getattr(service, "export_results", None))
+        )
+    if not compatible:
+        st.error(RESTART_REQUIRED_MESSAGE)
+        st.stop()
 
 
 def _ensure_controller(settings: dict) -> AppController:
-    """設定變更時重建控制器；重跑時沿用既有狀態，避免重複查詢或重複下載。
-
-    另外檢查快取的實例是否屬於「目前的」AppController 類別：開發時熱重載會換掉
-    類別物件，舊實例會缺少新方法，必須重建才不會出現 AttributeError。
-    """
-    _reload_submodules_if_needed()
+    """相容 session 沿用實例；不相容時要求重啟，不替換背景服務。"""
+    cached = st.session_state.get("controller")
+    _require_compatible_runtime(cached)
     key = (
         settings["root"],
         settings["db_path"],
@@ -195,47 +200,14 @@ def _ensure_controller(settings: dict) -> AppController:
         settings["mode"].value,
         settings["template"],
     )
-    cached = st.session_state.get("controller")
-    # 熱重載會換掉類別物件，但 session 仍握著舊實例；用介面版本（或「缺方法」）
-    # 只要對不上就重建，不能只看型別，因為型別可能仍是同一個舊類別。
-    # 若載入中的類別本身也還沒有版本標記（reload 尚未完成），就維持現況以免每次
-    # 重跑都重建控制器、丢掉選取。
-    class_ready = getattr(AppController, "api_version", None) == CONTROLLER_API_VERSION
-    stale = class_ready and cached is not None and (
-        not isinstance(cached, AppController)
-        or getattr(cached, "api_version", None) != CONTROLLER_API_VERSION
-    )
-    if stale or st.session_state.get("settings") != key:
+    if cached is None or st.session_state.get("settings") != key:
         new_ctrl = build_controller(**settings)
-        prev_snapshot = getattr(cached, "snapshot", None) if stale else None
-        if prev_snapshot is not None:
-            from app.engine.filter import FilterState, build_candidates
-
-            new_ctrl.snapshot = prev_snapshot
-            new_ctrl.state = build_candidates(
-                prev_snapshot.records, FilterState()
-            ).initial_state(
-                year_start=prev_snapshot.spec.start_year,
-                year_end=prev_snapshot.spec.end_year,
-            )
+        _require_compatible_runtime(new_ctrl)
         st.session_state["controller"] = new_ctrl
         st.session_state["settings"] = key
         _reset_candidate_widgets()
     return st.session_state["controller"]
 
-
-
-SAMPLE_VARS = {
-    "年度": "113",
-    "年度標籤": "113年",
-    "考試名稱": "高考三級考試",
-    "考試簡稱": "高考三級",
-    "類科": "資訊處理",
-    "科目": "資料結構",
-    "等別": "三等",
-    "題型類別": "申論題",
-    "題型": "申論試題",
-}
 
 
 def build_tree_preview(root_dir: str, template: str) -> str:

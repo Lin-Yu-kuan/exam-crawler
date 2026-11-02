@@ -55,6 +55,11 @@ class FakeQueryService:
 
 
 class FakeTaskService:
+    api_version = 1
+
+    def export_results(self, task_id):
+        return ()
+
     def __init__(self) -> None:
         self.submissions: list[tuple[str, tuple[str, ...]]] = []
         self.status = TaskStatus.DOWNLOADING
@@ -158,6 +163,34 @@ def test_query_initialises_all_candidates(html_dir) -> None:
     assert len(controller.state.categories) == 75
     assert controller.can_download() is True
     assert controller.stats().records == 371
+
+
+@pytest.mark.parametrize("version,exporter", [(None, None), (0, lambda task_id: ()), (1, None)])
+def test_incompatible_task_service_blocks_submission_retry_and_export(html_dir, version, exporter):
+    from app.engine.task_service import TaskServiceError
+    from app.ui.controller import RESTART_REQUIRED_MESSAGE
+
+    controller, _, tasks = make_controller(html_dir)
+    controller.query(QuerySpec(113, 113))
+    tasks.api_version = version
+    tasks.export_results = exporter
+    controller.task_id = "already-running"
+    assert not controller.can_download()
+    assert controller.start_download() is None
+    assert controller.last_error == RESTART_REQUIRED_MESSAGE
+    assert controller.retry() is None
+    assert tasks.submissions == []
+    assert tasks.retried == 0
+    assert controller.task_id == "already-running"
+    with pytest.raises(TaskServiceError, match="重新啟動"):
+        controller.export_paths()
+
+
+def test_constructor_reports_legacy_service():
+    from app.ui.controller import RESTART_REQUIRED_MESSAGE
+
+    controller = AppController(query_service=FakeQueryService(), task_service=object())
+    assert controller.last_error == RESTART_REQUIRED_MESSAGE
 
 
 def test_export_uses_task_results_after_selection_changes(html_dir, monkeypatch):

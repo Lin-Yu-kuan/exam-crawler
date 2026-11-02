@@ -1,12 +1,9 @@
-"""熱重載保護：session 內的控制器若屬舊版（缺介面版本），必須自動重建。
-
-開發時 Streamlit 會重新載入模組，但 session_state 仍持有舊實例；舊實例沒有新方法
-（例如 preview_fingerprint），會在畫面上變成 AttributeError。
-"""
+"""更新相容性保護：不相容的 session 提示重啟，不替換服務。"""
 
 from __future__ import annotations
 
 import pathlib
+import pytest
 
 from streamlit.testing.v1 import AppTest
 
@@ -27,6 +24,21 @@ class OldApiController:  # 模擬有 api_version 但落後的實例
     api_version = CONTROLLER_API_VERSION - 1
 
 
+class LegacyService:
+    api_version = 0
+    def export_results(self, task_id):
+        return ()
+
+class MissingMethodService:
+    api_version = 1
+
+class CurrentControllerWithOldService:
+    api_version = CONTROLLER_API_VERSION
+    task_id = "running-task"
+    _task_service = LegacyService()
+    def export_paths(self):
+        raise AssertionError("不應匯出舊任務")
+
 mode = "__MODE__"
 
 if "seeded" not in st.session_state:
@@ -34,6 +46,11 @@ if "seeded" not in st.session_state:
         st.session_state["controller"] = StaleController()
     elif mode == "old_api":
         st.session_state["controller"] = OldApiController()
+    elif mode in ("old_service", "missing_method"):
+        cached = CurrentControllerWithOldService()
+        if mode == "missing_method":
+            cached._task_service = MissingMethodService()
+        st.session_state["controller"] = cached
     st.session_state["settings"] = None
     st.session_state["seeded"] = True
 
@@ -63,17 +80,47 @@ def _run(tmp_path: pathlib.Path, mode: str) -> AppTest:
     return app
 
 
-def test_stale_controller_without_api_version_is_rebuilt(tmp_path) -> None:
-    app = _run(tmp_path, "missing_api")
-
+@pytest.mark.parametrize("mode", ["missing_api", "old_api", "old_service", "missing_method"])
+def test_incompatible_session_stops_without_rebuilding(tmp_path, mode):
+    app = _run(tmp_path, mode)
     assert not app.exception
-    assert app.session_state["rebuilt"] == "AppController"
-    assert app.session_state["api_ok"] is True
-
-
-def test_controller_with_old_api_version_is_rebuilt(tmp_path) -> None:
-    app = _run(tmp_path, "old_api")
-
+    assert len(app.error) == 1
+    assert "重新啟動應用程式" in app.error[0].value
+    cached = app.session_state["controller"]
+    app.run()
     assert not app.exception
-    assert app.session_state["rebuilt"] == "AppController"
+    assert app.session_state["controller"] is cached
+    assert app.session_state["settings"] is None
+    assert not (tmp_path / "downloads" / "manifest.db").exists()
+    if mode in ("old_service", "missing_method"):
+        assert cached.task_id == "running-task"
+
+
+def test_fresh_runtime_and_compatible_rerun_reuse_controller(tmp_path):
+    app = _run(tmp_path, "fresh")
+    assert not app.exception
+    assert not app.error
     assert app.session_state["api_ok"] is True
+    cached = app.session_state["controller"]
+    app.run()
+    assert not app.exception
+    assert app.session_state["controller"] is cached
+
+
+def test_old_loaded_service_class_stops_before_building(monkeypatch):
+    from types import SimpleNamespace
+    from app.ui import web_app
+
+    class Stopped(Exception):
+        pass
+
+    errors = []
+    def stop():
+        raise Stopped()
+
+    monkeypatch.setattr(web_app, "TaskService", SimpleNamespace(api_version=0))
+    monkeypatch.setattr(web_app.st, "error", errors.append)
+    monkeypatch.setattr(web_app.st, "stop", stop)
+    with pytest.raises(Stopped):
+        web_app._require_compatible_runtime()
+    assert errors == [web_app.RESTART_REQUIRED_MESSAGE]

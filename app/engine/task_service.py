@@ -194,6 +194,9 @@ class _Task:
 class TaskService:
     """任務建立、取消與重試；狀態轉移一律在鎖內完成。"""
 
+    # 介面或任務記憶體結構不相容時遞增；舊實例須由程序重啟淘汰。
+    api_version = 1
+
     def __init__(
         self,
         *,

@@ -28,6 +28,8 @@ from app.ui.controller import AppController
 
 
 class _NoNetwork:
+    api_version = 1
+
     def __getattr__(self, name):  # 任何呼叫都代表越界使用網路
         def _boom(*args, **kwargs):
             raise AssertionError("UI 不應呼叫 " + name)
