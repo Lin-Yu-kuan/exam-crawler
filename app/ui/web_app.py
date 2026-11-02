@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -21,8 +23,55 @@ from app.models import ParseStatus, QuerySpec, TaskStatus
 from app.storage.manifest import ManifestStore
 from app.ui.controller import CONTROLLER_API_VERSION, DIMENSION_LABELS, DIMENSIONS, AppController
 
-DEFAULT_ROOT = "downloads"
+DEFAULT_ROOT = r"C:\國考題庫"
 SYSTEM_DIR_NAME = "_系統資料"
+
+
+def pick_directory_dialog(initial_dir: str) -> str | None:
+    """呼叫作業系統內建的資料夾選擇器；取消或失敗時回傳 None。"""
+    start_path = Path(initial_dir) if initial_dir else Path(DEFAULT_ROOT)
+    while not start_path.exists() and start_path.parent != start_path:
+        start_path = start_path.parent
+    init_str = str(start_path) if start_path.exists() else "C:\\"
+
+    script = (
+        "import sys, tkinter as tk\n"
+        "from tkinter import filedialog\n"
+        "try:\n"
+        "    import ctypes\n"
+        "    ctypes.windll.shcore.SetProcessDpiAwareness(1)\n"
+        "except Exception:\n"
+        "    pass\n"
+        "root = tk.Tk()\n"
+        "root.withdraw()\n"
+        "root.attributes('-topmost', True)\n"
+        "selected = filedialog.askdirectory(initialdir=sys.argv[1], title='選擇題庫下載目錄', mustexist=False)\n"
+        "root.destroy()\n"
+        "if selected:\n"
+        "    sys.stdout.write(selected)\n"
+    )
+    try:
+        proc = subprocess.run(
+            [sys.executable, "-X", "utf8", "-c", script, init_str],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=300,
+            check=False,
+        )
+        chosen = proc.stdout.strip()
+        if chosen:
+            return str(Path(chosen))
+    except Exception:
+        return None
+    return None
+
+
+def _on_pick_directory() -> None:
+    current = st.session_state.get("download_root", DEFAULT_ROOT)
+    chosen = pick_directory_dialog(current)
+    if chosen:
+        st.session_state["download_root"] = chosen
 
 
 def resolve_manifest_path(root: str | Path) -> Path:
@@ -46,6 +95,12 @@ def resolve_manifest_path(root: str | Path) -> Path:
             target_extra = sys_dir / f"manifest.db{suffix}"
             if legacy_extra.exists() and not target_extra.exists():
                 shutil.move(str(legacy_extra), str(target_extra))
+    elif not target_db.exists() and str(root) == DEFAULT_ROOT:
+        old_default_db = Path("downloads") / SYSTEM_DIR_NAME / "manifest.db"
+        if old_default_db.exists():
+            import shutil
+
+            shutil.copy2(str(old_default_db), str(target_db))
 
     return target_db
 
@@ -188,7 +243,15 @@ def _sidebar() -> tuple[dict, bool]:
     with st.sidebar:
         st.subheader("題庫歸檔")
         st.caption("設定一次，專心挑選需要的試題。")
-        root = st.text_input("下載根目錄", DEFAULT_ROOT)
+        if "download_root" not in st.session_state:
+            st.session_state["download_root"] = DEFAULT_ROOT
+        root = st.text_input("下載根目錄", key="download_root")
+        st.button(
+            "📂 選擇目錄…",
+            on_click=_on_pick_directory,
+            width="stretch",
+            key="pick-dir-btn",
+        )
         st.caption("下載紀錄由程式自動保存，搬移題庫時請連同整個資料夾一起搬移。")
         mode_label = st.selectbox("歸檔模式", list(MODE_LABELS))
         mode = MODE_LABELS[mode_label]

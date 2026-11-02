@@ -2,15 +2,21 @@
 from __future__ import annotations
 
 import argparse
+from datetime import datetime
 import hashlib
 import json
 import os
 from pathlib import Path
+import re
+import secrets
 import sqlite3
 import sys
 from typing import Any
+import unicodedata
+import uuid
 
 TOOL_VERSION = "1"
+WINDOWS_RESERVED = {"CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in range(1, 10)), *(f"LPT{i}" for i in range(1, 10))}
 
 
 def digest(path: Path) -> str:
@@ -151,6 +157,8 @@ def extract(data: dict[str, Any], selection: dict[str, Any] | None,
     except ImportError as exc:
         raise ValueError("缺少 pypdf；請在選定環境執行 python -m pip install pypdf") from exc
     root, chosen = select_sources(data, selection, pages)
+    if resume is not None and resume.get("schema_version") != 1:
+        raise ValueError("resume 不是支援的擷取索引")
     config = {"tool_version": TOOL_VERSION, "pypdf_version": pypdf.__version__, "page_scope": pages}
     cache = {}
     if resume and all(resume.get(key) == value for key, value in config.items()):
@@ -194,11 +202,58 @@ def extract(data: dict[str, Any], selection: dict[str, Any] | None,
     return {"schema_version": 1, **config, "documents": documents}
 
 
+def safe_name(value: str, fallback: str = "未命名科目") -> str:
+    """清理 Windows／POSIX 都不安全的名稱，保留中文可讀性。"""
+    text = unicodedata.normalize("NFC", str(value)).strip()
+    text = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", text)
+    text = re.sub(r"\s+", " ", text).strip(" .")
+    if not text:
+        return fallback
+    if text.split(".")[0].upper() in WINDOWS_RESERVED:
+        text = "_" + text
+    text = text[:80].rstrip(" .")
+    return text or fallback
+
+
+def run_dir(root: Path, subject: str) -> Path:
+    """在 _analysis 下建立唯一執行目錄，不寫入既有目錄。"""
+    root = root.resolve(strict=True)
+    if not root.is_dir():
+        raise ValueError("來源必須是資料夾")
+    base = root / "_analysis" / safe_name(subject)
+    for _ in range(5):
+        candidate = base / f"{datetime.now():%Y%m%d-%H%M%S}-{secrets.token_hex(3)}"
+        try:
+            candidate.mkdir(parents=True, exist_ok=False)
+            return candidate
+        except FileExistsError:
+            continue
+    raise ValueError("無法建立唯一執行目錄")
+
+
 def write_new(path: Path, data: dict[str, Any]) -> None:
-    """排他建立輸出，不覆寫既有資料。"""
+    """以暫存檔原子發佈，排他建立輸出；不覆寫既有資料。"""
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("x", encoding="utf-8") as stream:
-        json.dump(data, stream, ensure_ascii=False, indent=2)
+    if path.is_symlink():
+        raise ValueError("輸出不可為連結")
+    temp = path.with_name(path.name + "." + uuid.uuid4().hex + ".tmp")
+    try:
+        with temp.open("x", encoding="utf-8") as stream:
+            json.dump(data, stream, ensure_ascii=False, indent=2)
+            stream.flush()
+            os.fsync(stream.fileno())
+        try:
+            os.link(temp, path)
+        except FileExistsError:
+            raise FileExistsError(f"輸出已存在：{path}") from None
+        except OSError:
+            # 少數檔案系統不支援硬連結；退回排他建立，仍不覆寫。
+            with path.open("xb") as target, temp.open("rb") as source:
+                target.write(source.read())
+                target.flush()
+                os.fsync(target.fileno())
+    finally:
+        temp.unlink(missing_ok=True)
 
 
 def main() -> int:
@@ -208,6 +263,9 @@ def main() -> int:
     inv.add_argument("root", type=Path)
     inv.add_argument("--manifest", type=Path)
     inv.add_argument("--output", required=True, type=Path)
+    run = commands.add_parser("run-dir", help="在 _analysis 下建立新的執行目錄")
+    run.add_argument("root", type=Path)
+    run.add_argument("--subject", required=True)
     ext = commands.add_parser("extract", help="擷取已選 PDF 文字")
     ext.add_argument("--inventory", required=True, type=Path)
     ext.add_argument("--selection", type=Path)
@@ -218,10 +276,17 @@ def main() -> int:
     render.add_argument("--inventory", required=True, type=Path)
     render.add_argument("--selection", type=Path)
     render.add_argument("--pages", help="一基頁碼，逗號分隔；未選取時只允許 1")
-    render.add_argument("--dpi", type=float, default=150)
+    render.add_argument("--dpi", type=float, default=150.0)
     render.add_argument("--resume", type=Path, help="先前 render-index.json，可與 output 相同")
     render.add_argument("--output", required=True, type=Path, help="render-index.json 路徑")
     args = parser.parse_args()
+    if args.command == "run-dir":
+        try:
+            print(run_dir(args.root, args.subject))
+            return 0
+        except (OSError, ValueError) as exc:
+            print(f"無法完成：{exc}", file=sys.stderr)
+            return 2
     try:
         same_resume = args.command == "render" and args.resume and args.output.resolve() == args.resume.resolve()
         if args.output.exists() and not same_resume:

@@ -17,7 +17,7 @@ def test_web_app_exposes_main_and_controller_builder() -> None:
 
     assert callable(web_app.main)
     assert callable(web_app.build_controller)
-    assert web_app.DEFAULT_ROOT == "downloads"
+    assert web_app.DEFAULT_ROOT == r"C:\國考題庫"
 
 
 def test_web_app_has_no_import_time_side_effects() -> None:
@@ -159,3 +159,31 @@ def test_database_input_removed_from_sidebar() -> None:
     source = (ROOT / "app" / "ui" / "web_app.py").read_text(encoding="utf-8")
     assert 'st.text_input("資料庫檔案"' not in source, "不讓使用者手動輸入資料庫路徑"
     assert "下載紀錄由程式自動保存，搬移題庫時請連同整個資料夾一起搬移。" in source
+
+
+
+def test_directory_picker_uses_native_dialog_and_returns_normalized_path(monkeypatch) -> None:
+    import subprocess
+    from app.ui import web_app
+
+    class DummyCompleted:
+        def __init__(self, stdout: str) -> None:
+            self.stdout = stdout
+
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *args, **kwargs: DummyCompleted("C:/Users/Public/ExamBank\n"),
+    )
+    chosen = web_app.pick_directory_dialog(r"C:\國考題庫")
+    assert chosen == r"C:\Users\Public\ExamBank"
+
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *args, **kwargs: DummyCompleted(""),
+    )
+    assert web_app.pick_directory_dialog(r"C:\國考題庫") is None
+
+    source = (ROOT / "app" / "ui" / "web_app.py").read_text(encoding="utf-8")
+    assert "📂 選擇目錄…" in source

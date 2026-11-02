@@ -7,6 +7,7 @@ import json
 import math
 import os
 from pathlib import Path
+from shutil import copyfile
 from typing import Any
 import uuid
 
@@ -99,8 +100,26 @@ def render_page(pdf: Any, number: int, sha: str, image_root: Path,
         temp.unlink(missing_ok=True)
 
 
+def _normalized_config(config: dict[str, Any] | None) -> dict[str, Any]:
+    """舊索引的 DPI 可能是整數；比較前統一成浮點數。"""
+    result = dict(config or {})
+    if "requested_dpi" in result:
+        result["requested_dpi"] = float(result["requested_dpi"])
+    return result
+
+
+def _put_page(doc: dict[str, Any], row: dict[str, Any]) -> None:
+    """同頁重試時取代舊資料，不讓索引重複累積。"""
+    pages = doc.setdefault("pages", [])
+    for index, existing in enumerate(pages):
+        if existing.get("page") == row.get("page"):
+            pages[index] = row
+            return
+    pages.append(row)
+
+
 def render_pdf(data: dict[str, Any], selection: dict[str, Any] | None,
-               pages: list[int] | None, output: Path, *, dpi: float = 150,
+               pages: list[int] | None, output: Path, *, dpi: float = 150.0,
                resume_path: Path | None = None) -> dict[str, Any]:
     """來源與選取重新驗證；每頁落盤，可從相同或新索引恢復。"""
     try:
@@ -108,6 +127,7 @@ def render_pdf(data: dict[str, Any], selection: dict[str, Any] | None,
         from PIL import Image, __version__ as pillow_version
     except ImportError as exc:
         raise ValueError("缺少圖片依賴；請在選定環境執行 python -m pip install pypdfium2 Pillow") from exc
+    dpi = float(dpi)
     if not math.isfinite(dpi) or dpi <= 0 or dpi > 1200:
         raise ValueError("DPI 必須介於 0（不含）與 1200 之間")
     root, chosen = select_sources(data, selection, pages)
@@ -125,19 +145,43 @@ def render_pdf(data: dict[str, Any], selection: dict[str, Any] | None,
     config = {"render_version": RENDER_VERSION, "pypdfium_version": str(pdfium.PYPDFIUM_INFO),
               "pdfium_version": str(pdfium.PDFIUM_INFO), "pillow_version": pillow_version,
               "requested_dpi": dpi, "max_pixels": MAX_PIXELS}
+    if same_output:
+        # 同一個索引只允許相同選取、相同頁碼範圍與相同渲染設定；否則使用新輸出。
+        if previous is None:
+            raise ValueError("找不到可恢復的渲染索引")
+        if _normalized_config(previous.get("config")) != config:
+            raise ValueError("同一索引不可變更渲染設定，請使用新輸出")
+        if previous.get("page_scope") != pages:
+            raise ValueError("同一索引不可變更頁碼範圍，請使用新輸出")
+        selected_shas = {item["sha256"] for item in chosen}
+        previous_shas = {doc.get("sha256") for doc in previous.get("documents", [])}
+        if previous_shas != selected_shas:
+            raise ValueError("同一索引僅允許相同選取恢復，請使用新輸出")
     image_root = output.parent / "render-images"
     if image_root.exists() and linked(image_root):
         raise ValueError("圖片目錄不可為連結")
     image_root.mkdir(parents=True, exist_ok=True)
+    resume_images = resume_path.resolve().parent / "render-images" if previous is not None else None
     cache: dict[tuple[str, int], dict[str, Any]] = {}
-    if previous and previous.get("config") == config:
+    if previous and _normalized_config(previous.get("config")) == config:
         for doc in previous.get("documents", []):
             for row in doc.get("pages", []):
                 if row.get("status") == "rendered":
                     cache[(doc["sha256"], row["page"])] = row
-    result: dict[str, Any] = {"schema_version": 1, "kind": "exam-render-index", "config": config,
-                              "page_scope": pages, "status": "in_progress", "documents": []}
-    if not same_output:
+    if same_output:
+        # 從舊索引開始，保留尚未走到的頁；後續 checkpoint 不會把進度覆蓋成空白。
+        result = previous
+        result.update({"schema_version": 1, "kind": "exam-render-index", "config": config,
+                       "page_scope": pages, "status": "in_progress"})
+        docs_by_sha = {doc["sha256"]: doc for doc in result.get("documents", [])}
+        for doc in docs_by_sha.values():
+            doc["status"] = "in_progress"
+            doc.pop("error", None)
+        checkpoint(output, result)
+    else:
+        result = {"schema_version": 1, "kind": "exam-render-index", "config": config,
+                  "page_scope": pages, "status": "in_progress", "documents": []}
+        docs_by_sha = {}
         write_new(output, result)
     grouped: dict[str, list[str]] = {}
     for item in chosen:
@@ -146,12 +190,24 @@ def render_pdf(data: dict[str, Any], selection: dict[str, Any] | None,
             verify_source(path, root, item["sha256"])
             grouped.setdefault(item["sha256"], []).append(str(path))
         except (OSError, ValueError) as exc:
-            result["documents"].append({"sha256": item["sha256"], "paths": [str(path)],
-                                         "status": "failed", "pages": [], "error": str(exc)})
+            doc = docs_by_sha.get(item["sha256"])
+            if doc is None:
+                doc = {"sha256": item["sha256"], "paths": [str(path)], "status": "failed", "pages": []}
+                result["documents"].append(doc)
+                docs_by_sha[item["sha256"]] = doc
+            doc.update({"paths": [str(path)], "status": "failed", "pages": [], "error": str(exc)})
+            doc.pop("total_pages", None)
             checkpoint(output, result)
     for sha, paths in grouped.items():
-        doc: dict[str, Any] = {"sha256": sha, "paths": paths, "status": "in_progress", "pages": []}
-        result["documents"].append(doc)
+        doc = docs_by_sha.get(sha)
+        if doc is None:
+            doc = {"sha256": sha, "paths": paths, "status": "in_progress", "pages": []}
+            result["documents"].append(doc)
+            docs_by_sha[sha] = doc
+        else:
+            doc["paths"] = paths
+            doc["status"] = "in_progress"
+            doc.pop("error", None)
         checkpoint(output, result)
         try:
             with pdfium.PdfDocument(paths[0]) as pdf:
@@ -163,20 +219,29 @@ def render_pdf(data: dict[str, Any], selection: dict[str, Any] | None,
                         if number > len(pdf):
                             raise ValueError("頁碼超出 PDF 範圍")
                         old = cache.get((sha, number))
-                        if old and cached_page(old, resume_path.resolve().parent / "render-images", Image):
-                            # 複製到本次輸出，以便後續僅攜帶本次目錄也能再次恢復。
-                            from shutil import copyfile
-                            target = image_root / (old["cache_key"] + "-" + uuid.uuid4().hex + ".png")
-                            copyfile(old["image_path"], target)
-                            row = {**old, "image_path": str(target), "reused": True, "visual_status": "not_checked"}
+                        if old and resume_images is not None and cached_page(old, resume_images, Image):
+                            old_path = Path(old["image_path"]).resolve(strict=True)
+                            if old_path.is_relative_to(image_root.resolve()):
+                                # 已在本次目錄內：直接沿用，避免每次恢復都複製一份。
+                                row = {**old, "image_path": str(old_path), "reused": True,
+                                       "visual_status": "not_checked"}
+                            else:
+                                # 複製到本次輸出，以便後續僅攜帶本次目錄也能再次恢復。
+                                target = image_root / (old["cache_key"] + "-" + uuid.uuid4().hex + ".png")
+                                copyfile(old_path, target)
+                                row = {**old, "image_path": str(target), "reused": True,
+                                       "visual_status": "not_checked"}
                         else:
                             row = render_page(pdf, number, sha, image_root, config)
                     except Exception as exc:
                         row = {"page": number, "source_sha256": sha, "status": "failed",
                                "visual_status": "not_checked", "error": str(exc)}
-                    doc["pages"].append(row)
+                    _put_page(doc, row)
                     checkpoint(output, result)
-                doc["status"] = "rendered" if all(row["status"] == "rendered" for row in doc["pages"]) else "partial"
+                doc["pages"].sort(key=lambda row: row.get("page", 0))
+                expected = len(pdf) if pages is None else len(pages)
+                doc["status"] = "rendered" if len(doc["pages"]) == expected and all(
+                    row["status"] == "rendered" for row in doc["pages"]) else "partial"
         except Exception as exc:
             doc.update(status="failed", error=str(exc))
         checkpoint(output, result)
