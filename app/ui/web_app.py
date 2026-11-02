@@ -6,9 +6,13 @@
 
 from __future__ import annotations
 
+import io
+import os
 import subprocess
 import sys
+import tempfile
 import time
+import zipfile
 from pathlib import Path
 
 import streamlit as st
@@ -23,7 +27,15 @@ from app.models import ParseStatus, QuerySpec, TaskStatus
 from app.storage.manifest import ManifestStore
 from app.ui.controller import CONTROLLER_API_VERSION, DIMENSION_LABELS, DIMENSIONS, AppController
 
-DEFAULT_ROOT = r"C:\國考題庫"
+def is_cloud_env() -> bool:
+    """判斷是否運行於 Streamlit Cloud 或 Linux 無原生視窗的雲端環境。"""
+    cloud_env_keys = ("STREAMLIT_SHARING_HOST", "IS_STREAMLIT_CLOUD", "STREAMLIT_SERVER_BASE_URL_PATH")
+    return any(os.environ.get(k) for k in cloud_env_keys) or not sys.platform.startswith("win")
+
+
+DEFAULT_LOCAL_ROOT = r"C:\國考題庫"
+DEFAULT_CLOUD_ROOT = str(Path(tempfile.gettempdir()) / "moex_exam_bank")
+DEFAULT_ROOT = DEFAULT_CLOUD_ROOT if is_cloud_env() else DEFAULT_LOCAL_ROOT
 SYSTEM_DIR_NAME = "_系統資料"
 
 
@@ -245,14 +257,20 @@ def _sidebar() -> tuple[dict, bool]:
         st.caption("設定一次，專心挑選需要的試題。")
         if "download_root" not in st.session_state:
             st.session_state["download_root"] = DEFAULT_ROOT
-        root = st.text_input("下載根目錄", key="download_root")
-        st.button(
-            "📂 選擇目錄…",
-            on_click=_on_pick_directory,
-            width="stretch",
-            key="pick-dir-btn",
-        )
-        st.caption("下載紀錄由程式自動保存，搬移題庫時請連同整個資料夾一起搬移。")
+        
+        cloud_mode = is_cloud_env()
+        if cloud_mode:
+            root = st.session_state["download_root"]
+            st.info("☁️ 雲端模式：完成後可直接一鍵下載分類打包的 ZIP 題庫包。")
+        else:
+            root = st.text_input("下載根目錄", key="download_root")
+            st.button(
+                "📂 選擇目錄…",
+                on_click=_on_pick_directory,
+                width="stretch",
+                key="pick-dir-btn",
+            )
+            st.caption("下載紀錄由程式自動保存，搬移題庫時請連同整個資料夾一起搬移。")
         mode_label = st.selectbox("歸檔模式", list(MODE_LABELS))
         mode = MODE_LABELS[mode_label]
         template = ""
@@ -605,6 +623,20 @@ def _render_task(controller: AppController, auto_refresh: bool, root: str = DEFA
         f"／失敗 {state.failed}／取消 {state.cancelled}"
     )
 
+    # 任務完成或部分完成時，提供整包打包下載（雲端必備，本機亦可方便打包）
+    if state.status in (TaskStatus.COMPLETED, TaskStatus.PARTIAL) and (state.completed > 0 or state.skipped > 0):
+        zip_bytes = _create_zip_from_root(root)
+        if zip_bytes:
+            st.download_button(
+                label="📦 下載已分類好的題庫包 (ZIP 壓縮檔)",
+                data=zip_bytes,
+                file_name=f"國考題庫_{time.strftime('%Y%m%d_%H%M%S')}.zip",
+                mime="application/zip",
+                type="primary",
+                width="stretch",
+                key="download-zip-btn",
+            )
+
     if state.failures:
         with st.expander(f"失敗附件（{len(state.failures)}）"):
             for asset_id, code, message in state.failures[:20]:
@@ -622,6 +654,22 @@ def _render_task(controller: AppController, auto_refresh: bool, root: str = DEFA
         time.sleep(1.0)
         st.rerun()
 
+
+
+def _create_zip_from_root(root: str) -> bytes | None:
+    """將題庫目錄下所有已歸檔的 PDF 檔案（排除 _系統資料與暫存檔）打包成 ZIP 二進位資料。"""
+    root_path = Path(root)
+    if not root_path.exists():
+        return None
+    pdf_files = [p for p in root_path.rglob("*.pdf") if SYSTEM_DIR_NAME not in p.parts and ".parts" not in p.parts]
+    if not pdf_files:
+        return None
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        for p in pdf_files:
+            rel = p.relative_to(root_path)
+            zf.write(p, arcname=str(rel))
+    return buf.getvalue()
 
 def _section_heading(number: str, title: str, description: str) -> None:
     """以固定文案顯示一致的流程標題。"""
