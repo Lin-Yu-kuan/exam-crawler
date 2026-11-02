@@ -58,6 +58,7 @@ if "ctrl" not in st.session_state:
 
 controller = st.session_state["ctrl"]
 web_app._render_candidates(controller)
+web_app._render_task(controller, False)
 st.session_state["exams_total"] = len(controller.faceted_candidates().exams)
 st.session_state["categories_total"] = len(controller.faceted_candidates().categories)
 st.session_state["subjects_total"] = len(controller.faceted_candidates().subjects)
@@ -89,8 +90,7 @@ def test_candidates_block_has_full_items(candidates_app: AppTest) -> None:
 def test_metric_row_reflects_initial_selection(candidates_app: AppTest) -> None:
     assert not candidates_app.exception
     metrics = {m.label: m.value for m in candidates_app.metric}
-    assert "考科數" in metrics
-    assert int(metrics["考科數"]) > 0
+    assert "已選考科" in metrics
+    assert int(metrics["已選考科"]) > 0
     assert "試題附件" in metrics
     assert "答案附件" in metrics
-    assert "實際傳輸（去重）" in metrics

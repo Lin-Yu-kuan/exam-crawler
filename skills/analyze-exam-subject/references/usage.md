@@ -13,6 +13,8 @@
 
 Python 3.10+；盤點只用標準函式庫。PDF 擷取需要 pypdf。缺少時，先提示使用者在選定環境執行 `python -m pip install pypdf`，不靜默安裝。無 OCR 引擎或宿主視覺能力時，掃描頁只能回報待視覺檢查。所有命令中的路徑請加引號；以下以技能資料夾為目前目錄。
 
+逐頁圖片功能需要 `pypdfium2` 與 `Pillow`；缺少時提示 `python -m pip install pypdfium2 Pillow`，不自動安裝。圖片產生不需要視覺模型；判讀需要宿主實際提供圖片工具。無視覺時保留文字分析與待檢視圖片，不使用外部 OCR API。參閱 [視覺檢查及 render 指令](visual-review.md)。
+
 ```shell
 python scripts/exam_files.py inventory "D:/題庫" --output "D:/題庫/_analysis/盤點/inventory.json"
 python scripts/exam_files.py inventory "D:/題庫" --manifest "D:/下載記錄/manifest.sqlite3" --output "D:/題庫/_analysis/盤點/inventory-with-metadata.json"
@@ -21,6 +23,8 @@ python scripts/exam_files.py extract --inventory "D:/題庫/_analysis/盤點/inv
 ```
 
 `--pages` 為一基頁碼，以逗號分隔，例如 `1,2`；未提供代表全文。未提供 selection 時只允許首頁預覽，防止選取前擷取全部試卷。輸出必須是不存在的新檔，不覆寫來源。`--resume` 接受先前的 extraction.json，重用合格結果但仍輸出到新檔。
+
+以上輸出與 resume 規則適用 extract。render 的 --resume 接受 render-index.json，允許恢復同一索引；圖片不覆寫，逐頁進度原子保存。文字與渲染索引不可混用。
 
 盤點檔案讀取失敗、資料夾存取失敗與未知 manifest 會列入 warnings；PDF 失敗會逐檔回報，其他檔案繼續。命令成功不表示所有 PDF 都成功，應檢查每筆 status。
 
@@ -33,3 +37,5 @@ metadata 只在附件 SHA-256 與實際檔案相符時掛載，保留各 snapsho
 ## 驗證
 
 在有 pypdf 的環境執行 `python -m unittest discover -s tests -v`。測試使用自行產生的 PDF，不讀取使用者試卷。`tests/behavior-cases.md` 提供宿主 AI 人工驗收案例；腳本測試不能證明語意分類正確。
+
+目前驗證結果與尚未完成的雙平台測試見 [驗證紀錄](../tests/validation.md)。

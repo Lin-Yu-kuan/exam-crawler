@@ -108,12 +108,9 @@ def read_json(path: Path) -> dict[str, Any]:
         return json.load(stream)
 
 
-def extract(data: dict[str, Any], selection: dict[str, Any] | None,
-            pages: list[int] | None, resume: dict[str, Any] | None = None) -> dict[str, Any]:
-    try:
-        import pypdf
-    except ImportError as exc:
-        raise ValueError("缺少 pypdf；請在選定環境執行 python -m pip install pypdf") from exc
+def select_sources(data: dict[str, Any], selection: dict[str, Any] | None,
+                   pages: list[int] | None) -> tuple[Path, list[dict[str, Any]]]:
+    """文字與圖片共用同一選取邊界，選取前僅允許首頁預覽。"""
     if not selection and pages != [1]:
         raise ValueError("全面擷取前須提供 selection；無選取時只允許 --pages 1")
     if pages is not None and (not pages or any(page < 1 for page in pages)):
@@ -134,6 +131,26 @@ def extract(data: dict[str, Any], selection: dict[str, Any] | None,
                 chosen.append(item)
         if not chosen:
             raise ValueError("尚未選取來源")
+    return root, chosen
+
+
+def verify_source(path: Path, root: Path, sha: str) -> None:
+    """每次使用快取前也重新確認來源位置與內容。"""
+    if not path.resolve(strict=True).is_relative_to(root):
+        raise ValueError("來源已移出根目錄")
+    if any(linked(part) for part in [path, *path.parents] if part != root and part.is_relative_to(root)):
+        raise ValueError("來源已變成連結")
+    if digest(path) != sha:
+        raise ValueError("來源內容已變更，請重新盤點")
+
+
+def extract(data: dict[str, Any], selection: dict[str, Any] | None,
+            pages: list[int] | None, resume: dict[str, Any] | None = None) -> dict[str, Any]:
+    try:
+        import pypdf
+    except ImportError as exc:
+        raise ValueError("缺少 pypdf；請在選定環境執行 python -m pip install pypdf") from exc
+    root, chosen = select_sources(data, selection, pages)
     config = {"tool_version": TOOL_VERSION, "pypdf_version": pypdf.__version__, "page_scope": pages}
     cache = {}
     if resume and all(resume.get(key) == value for key, value in config.items()):
@@ -143,12 +160,7 @@ def extract(data: dict[str, Any], selection: dict[str, Any] | None,
     for item in chosen:
         path = Path(item["path"])
         try:
-            if not path.resolve(strict=True).is_relative_to(root):
-                raise ValueError("來源已移出根目錄")
-            if any(linked(part) for part in [path, *path.parents] if part != root and part.is_relative_to(root)):
-                raise ValueError("來源已變成連結")
-            if digest(path) != item["sha256"]:
-                raise ValueError("來源內容已變更，請重新盤點")
+            verify_source(path, root, item["sha256"])
             grouped.setdefault(item["sha256"], []).append(str(path))
         except (OSError, ValueError) as exc:
             documents.append({"sha256": item["sha256"], "paths": [str(path)], "status": "failed", "pages": [], "error": str(exc)})
@@ -202,16 +214,31 @@ def main() -> int:
     ext.add_argument("--pages", help="一基頁碼，逗號分隔")
     ext.add_argument("--resume", type=Path)
     ext.add_argument("--output", required=True, type=Path)
+    render = commands.add_parser("render", help="逐頁渲染已選 PDF，不代表已完成視覺判讀")
+    render.add_argument("--inventory", required=True, type=Path)
+    render.add_argument("--selection", type=Path)
+    render.add_argument("--pages", help="一基頁碼，逗號分隔；未選取時只允許 1")
+    render.add_argument("--dpi", type=float, default=150)
+    render.add_argument("--resume", type=Path, help="先前 render-index.json，可與 output 相同")
+    render.add_argument("--output", required=True, type=Path, help="render-index.json 路徑")
     args = parser.parse_args()
     try:
-        if args.output.exists():
+        same_resume = args.command == "render" and args.resume and args.output.resolve() == args.resume.resolve()
+        if args.output.exists() and not same_resume:
             raise ValueError("輸出已存在，請選擇新的執行檔案")
         if args.command == "inventory":
             result = inventory(args.root, args.manifest)
-        else:
+        elif args.command == "extract":
             pages = sorted(set(int(value) for value in args.pages.split(","))) if args.pages else None
             result = extract(read_json(args.inventory), read_json(args.selection) if args.selection else None,
                              pages, read_json(args.resume) if args.resume else None)
+        else:
+            from pdf_render import render_pdf
+            pages = sorted(set(int(value) for value in args.pages.split(","))) if args.pages else None
+            render_pdf(read_json(args.inventory), read_json(args.selection) if args.selection else None,
+                       pages, args.output, dpi=args.dpi, resume_path=args.resume)
+            print(f"已輸出渲染索引（尚未視覺判讀）：{args.output}")
+            return 0
         write_new(args.output, result)
         print(f"已輸出：{args.output}")
         return 0

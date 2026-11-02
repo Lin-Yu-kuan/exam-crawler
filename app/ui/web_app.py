@@ -22,6 +22,34 @@ from app.storage.manifest import ManifestStore
 from app.ui.controller import CONTROLLER_API_VERSION, DIMENSION_LABELS, DIMENSIONS, AppController
 
 DEFAULT_ROOT = "downloads"
+SYSTEM_DIR_NAME = "_系統資料"
+
+
+def resolve_manifest_path(root: str | Path) -> Path:
+    """解析題庫資料庫路徑，固定存放在題庫根目錄下的 _系統資料/manifest.db。
+
+    若偵測到舊版存放在題庫根目錄的 manifest.db，自動無損搬移至 _系統資料。
+    """
+    root_path = Path(root).resolve()
+    sys_dir = root_path / SYSTEM_DIR_NAME
+    sys_dir.mkdir(parents=True, exist_ok=True)
+
+    target_db = sys_dir / "manifest.db"
+    legacy_db = root_path / "manifest.db"
+
+    if legacy_db.exists() and not target_db.exists():
+        import shutil
+
+        shutil.move(str(legacy_db), str(target_db))
+        for suffix in ("-wal", "-shm"):
+            legacy_extra = root_path / f"manifest.db{suffix}"
+            target_extra = sys_dir / f"manifest.db{suffix}"
+            if legacy_extra.exists() and not target_extra.exists():
+                shutil.move(str(legacy_extra), str(target_extra))
+
+    return target_db
+
+
 MAX_CHIPS = 40
 MODE_LABELS = {
     "A（依科目）": PathMode.A,
@@ -131,6 +159,7 @@ def _sidebar() -> tuple[dict, bool]:
         st.subheader("題庫歸檔")
         st.caption("設定一次，專心挑選需要的試題。")
         root = st.text_input("下載根目錄", DEFAULT_ROOT)
+        st.caption("下載紀錄由程式自動保存，搬移題庫時請連同整個資料夾一起搬移。")
         mode_label = st.selectbox("歸檔模式", list(MODE_LABELS))
         mode = MODE_LABELS[mode_label]
         template = ""
@@ -186,8 +215,8 @@ def _sidebar() -> tuple[dict, bool]:
                 st.caption("歸檔結構預覽")
                 st.code(build_tree_preview(root, template), language="text")
 
+        db_path = str(resolve_manifest_path(root))
         with st.expander("進階設定"):
-            db_path = st.text_input("資料庫檔案", str(Path(root) / "manifest.db"))
             workers = st.slider("下載併發數", MIN_WORKERS, MAX_WORKERS, DEFAULT_WORKERS)
             auto_refresh = st.checkbox("下載時自動更新進度", value=True)
         st.caption("本工具只在本機執行；查詢與下載需要網路。")

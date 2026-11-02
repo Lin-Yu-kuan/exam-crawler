@@ -120,3 +120,42 @@ def test_entry_point_builds_streamlit_arguments(monkeypatch) -> None:
     assert "--server.address=localhost" in argv
     assert "--server.headless=true" in argv
     assert argv[-1] == "--server.port=9000"
+
+
+def test_manifest_managed_by_system_and_migrated_automatically(tmp_path: pathlib.Path) -> None:
+    from app.ui.web_app import SYSTEM_DIR_NAME, resolve_manifest_path
+
+    # 情境 1: 乾淨目錄，自動解析為 _系統資料/manifest.db
+    clean_root = tmp_path / "clean_repo"
+    db_path = resolve_manifest_path(clean_root)
+    assert db_path == clean_root / SYSTEM_DIR_NAME / "manifest.db"
+    assert (clean_root / SYSTEM_DIR_NAME).is_dir()
+
+    # 情境 2: 既有目錄原本有 downloads/manifest.db 與 -wal/-shm，自動無損搬移
+    legacy_root = tmp_path / "legacy_repo"
+    legacy_root.mkdir()
+    legacy_db = legacy_root / "manifest.db"
+    legacy_wal = legacy_root / "manifest.db-wal"
+    legacy_shm = legacy_root / "manifest.db-shm"
+    legacy_db.write_text("dummy-db-content", encoding="utf-8")
+    legacy_wal.write_text("dummy-wal-content", encoding="utf-8")
+    legacy_shm.write_text("dummy-shm-content", encoding="utf-8")
+
+    migrated_db = resolve_manifest_path(legacy_root)
+    assert migrated_db == legacy_root / SYSTEM_DIR_NAME / "manifest.db"
+    assert migrated_db.is_file()
+    assert migrated_db.read_text(encoding="utf-8") == "dummy-db-content"
+    assert not legacy_db.exists(), "舊路徑的 manifest.db 應已搬移"
+
+    migrated_wal = legacy_root / SYSTEM_DIR_NAME / "manifest.db-wal"
+    migrated_shm = legacy_root / SYSTEM_DIR_NAME / "manifest.db-shm"
+    assert migrated_wal.is_file() and migrated_wal.read_text(encoding="utf-8") == "dummy-wal-content"
+    assert migrated_shm.is_file() and migrated_shm.read_text(encoding="utf-8") == "dummy-shm-content"
+    assert not legacy_wal.exists()
+    assert not legacy_shm.exists()
+
+
+def test_database_input_removed_from_sidebar() -> None:
+    source = (ROOT / "app" / "ui" / "web_app.py").read_text(encoding="utf-8")
+    assert 'st.text_input("資料庫檔案"' not in source, "不讓使用者手動輸入資料庫路徑"
+    assert "下載紀錄由程式自動保存，搬移題庫時請連同整個資料夾一起搬移。" in source
