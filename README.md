@@ -3,6 +3,11 @@
 > 專為國家考試考生打造的**考選部歷屆試題一鍵篩選、排版歸檔與去重下載工具**。  
 > 告別在官網一頁頁繁瑣點擊與雜亂檔名，自動將試題與測驗答案依您喜歡的結構整理成個人題庫！
 
+[![Streamlit App](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://exam-crawler-fpzztbmsmk5szzqla3w5p4.streamlit.app/)
+
+👉 **線上即用網址**：[https://exam-crawler-fpzztbmsmk5szzqla3w5p4.streamlit.app/](https://exam-crawler-fpzztbmsmk5szzqla3w5p4.streamlit.app/)  
+*(免安裝任何環境，打開瀏覽器就能直接查題、勾選考科與一鍵打包下載！)*
+
 ---
 
 ## ✨ 核心特色
@@ -17,15 +22,18 @@
    - 支援 24 小時查詢快照快取與中斷續載。
    - 相同內容之附件透過 SHA-256 自動去重，絕不浪費頻寬重複下載。
 4. **雙軌部署支援**
-   - 🌐 **雲端網頁版**：免安裝任何環境，打開瀏覽器就能查、選、整包下載 ZIP。
-   - 💻 **Windows 免安裝版 / 本機版**：原生資料夾對話框，一鍵批次歸檔至指定的本機硬碟資料夾。
+   - 🌐 **雲端網頁版**：免安裝任何環境，開啟網頁一鍵打包分類下載為 ZIP 壓縮檔。
+   - 💻 **Windows 免安裝版 / 本機版**：原生資料夾對話框，一鍵批次歸檔至指定的本機硬碟資料夾（預設 `C:\國考題庫`）。
 
 ---
 
-## 🚀 快速開始
+## 🚀 使用方式
 
-### 方式一：線上網頁版（免安裝）
-直接訪問部署好的公開網址（支援 Streamlit Community Cloud），立即開始選題與打包下載！
+### 方式一：線上網頁版（最推薦，免安裝）
+直接點擊前往：👉 **[國考刷題神器 線上版](https://exam-crawler-fpzztbmsmk5szzqla3w5p4.streamlit.app/)**
+1. 輸入欲練習的考試或科目關鍵字（例：`資訊處理`、`行政法`、`資料結構`）並點擊「查詢試題」。
+2. 在三欄清單中勾選需要的考科。
+3. 點擊「開始下載」，完成後點選「📦 下載已分類好的題庫包 (ZIP 壓縮檔)」整包帶走！
 
 ### 方式二：本機執行 (Python)
 
@@ -49,7 +57,7 @@
    pip install -r requirements.txt
    ```
 
-4. **啟動應用程式**：
+4. **啟動本機伺服器**：
    ```bash
    python main.py
    ```
@@ -57,21 +65,7 @@
 
 ---
 
-## ☁️ 部署到 Streamlit Community Cloud
-
-本專案已針對 Streamlit Cloud 完成環境自動適配：
-1. Fork 或 Push 本專案至您的 GitHub 帳號。
-2. 前往 [Streamlit Community Cloud](https://share.streamlit.io/) 並登入 GitHub。
-3. 點擊 **"Create app"**：
-   - **Repository**: `您的帳號/exam-crawler`
-   - **Branch**: `main`
-   - **Main file path**: `app/ui/web_app.py`（或 `main.py`）
-4. 點擊 **"Deploy"**，約 1~2 分鐘即刻上線！
-
----
-
 ## 📄 授權條款
 
-本專案採 MIT 授權條款釋出。
+本專案採 MIT 授權條款釋出。  
 考選部試題與解答之著作權與公開資訊權限均屬中華民國考選部所有。
-
