@@ -422,3 +422,74 @@ def resolve_frozen(
     if missing:
         raise SelectionError(f"快照中找不到凍結的紀錄：{missing[:5]}")
     return tuple(index[record_id] for record_id in frozen.record_ids)
+
+
+def build_faceted_candidates(
+    records: tuple[ExamRecord, ...],
+    *,
+    selected_exams: frozenset[str] = frozenset(),
+    selected_categories: frozenset[str] = frozenset(),
+    selected_subjects: frozenset[str] = frozenset(),
+    year_start: int | None = None,
+    year_end: int | None = None,
+) -> CandidateSets:
+    """依多向交叉篩選計算三個維度的候選清單與份數。
+
+    任一集合為空代表該維度不設限；計算任一維度之候選時，受另外兩個維度的篩選條件約束。
+    """
+    def pool(
+        exam_filter: frozenset[str],
+        cat_filter: frozenset[str],
+        sub_filter: frozenset[str],
+    ) -> tuple[ExamRecord, ...]:
+        matcher = _build_matcher(
+            exams=exam_filter,
+            categories=cat_filter,
+            subjects=sub_filter,
+            year_start=year_start,
+            year_end=year_end,
+        )
+        return tuple(record for record in records if matcher.match(record))
+
+    exams_pool = pool(frozenset(), selected_categories, selected_subjects)
+    cats_pool = pool(selected_exams, frozenset(), selected_subjects)
+    subs_pool = pool(selected_exams, selected_categories, frozenset())
+
+    exams = _count_by(exams_pool, "exam_name")
+    categories = _count_by(cats_pool, "category")
+    subjects = _count_by(subs_pool, "subject")
+
+    return CandidateSets(
+        exams=tuple(
+            Candidate(value=value, key=key, count=count)
+            for key, (value, count) in sorted(exams.items(), key=lambda item: (-item[1][1], item[1][0]))
+        ),
+        categories=tuple(
+            Candidate(value=value, key=key, count=count)
+            for key, (value, count) in sorted(categories.items(), key=lambda item: (-item[1][1], item[1][0]))
+        ),
+        subjects=tuple(
+            Candidate(value=value, key=key, count=count)
+            for key, (value, count) in sorted(subjects.items(), key=lambda item: (-item[1][1], item[1][0]))
+        ),
+    )
+
+
+def apply_faceted_selection(
+    records: tuple[ExamRecord, ...],
+    *,
+    selected_exams: frozenset[str] = frozenset(),
+    selected_categories: frozenset[str] = frozenset(),
+    selected_subjects: frozenset[str] = frozenset(),
+    year_start: int | None = None,
+    year_end: int | None = None,
+) -> tuple[ExamRecord, ...]:
+    """回傳同時符合三維度主動篩選條件的考科紀錄。空集合代表不限。"""
+    matcher = _build_matcher(
+        exams=selected_exams,
+        categories=selected_categories,
+        subjects=selected_subjects,
+        year_start=year_start,
+        year_end=year_end,
+    )
+    return tuple(record for record in records if matcher.match(record))

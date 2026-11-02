@@ -53,16 +53,16 @@ def test_query_form_has_category_and_subject_keyword_fields() -> None:
     assert "subject_keyword=subject_keyword.strip()" in source
 
 
-def test_candidate_ui_uses_chips_and_full_fetch() -> None:
-    """候選區塊要有 chips（可叉除）與清單加入；查詢表單要有兩個選項。"""
+def test_candidate_ui_uses_300px_table_and_full_fetch() -> None:
+    """候選區塊要有 300px 固定高度滾動表格；多向收斂支援；查詢表單要有全抓選項。"""
     source = (ROOT / "app" / "ui" / "web_app.py").read_text(encoding="utf-8")
 
     assert "不套用關鍵字，抓整年度全部考科" in source
-    assert "st.pills(" in source
-    assert 'selection_mode="multi"' in source
-    assert "_on_chips_change" in source
-    assert "_on_add_selection" in source
-    assert "MAX_CHIPS" in source
+    assert "st.data_editor(" in source
+    assert "height=300" in source
+    assert "CheckboxColumn" in source
+    assert "faceted_candidates" in source
+    assert "st.pills(" not in source, "長文字標籤海應已移除"
     assert "載入更多" not in source, "分頁會讓瀏覽器端的搜尋找不到未載入項目"
     assert "sel-{dimension}" not in source, "舊的單一多選清單應已移除"
 

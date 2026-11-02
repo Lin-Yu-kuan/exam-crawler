@@ -19,11 +19,10 @@ from app.engine.query_service import QueryService
 from app.engine.task_service import DEFAULT_WORKERS, MAX_WORKERS, MIN_WORKERS, TaskService
 from app.models import ParseStatus, QuerySpec, TaskStatus
 from app.storage.manifest import ManifestStore
-from app.ui.controller import CONTROLLER_API_VERSION, DIMENSION_LABELS, AppController
+from app.ui.controller import CONTROLLER_API_VERSION, DIMENSION_LABELS, DIMENSIONS, AppController
 
 DEFAULT_ROOT = "downloads"
 MAX_CHIPS = 40
-PREVIEW_ROW_LIMIT = 200
 MODE_LABELS = {
     "A（依科目）": PathMode.A,
     "B（依年度考試）": PathMode.B,
@@ -90,8 +89,6 @@ def _ensure_controller(settings: dict) -> AppController:
     if stale or st.session_state.get("settings") != key:
         st.session_state["controller"] = build_controller(**settings)
         st.session_state["settings"] = key
-        # 設定變更後舊的預覽與選取已不適用
-        st.session_state.pop("preview", None)
         _reset_candidate_widgets()
     return st.session_state["controller"]
 
@@ -208,76 +205,73 @@ def _render_candidates(controller: AppController) -> None:
     if controller.snapshot is None or controller.state is None:
         return
 
-    st.subheader("候選與選取")
-    candidates = controller.candidates()
-    for dimension in ("exams", "categories", "subjects"):
+    has_active_filters = any(controller.active_filters[dim] for dim in DIMENSIONS)
+    col_desc, col_reset = st.columns([4, 1])
+    if has_active_filters:
+        if col_reset.button("清除所有篩選（還原全部）", key="reset-all-filters"):
+            controller.clear_all_filters()
+            st.rerun()
+
+    candidates = controller.faceted_candidates()
+    table_cols = st.columns(3)
+
+    for idx, dimension in enumerate(DIMENSIONS):
         label = DIMENSION_LABELS[dimension]
-        all_items = getattr(candidates, dimension)
-        counts = {item.value: item.count for item in all_items}
-        selected = controller.selected_values(dimension)
-        selected_set = set(selected)
-        visible = controller.visible(dimension)
+        items = getattr(candidates, dimension)
+        active = controller.active_filters[dimension]
 
-        with st.expander(
-            f"{label}：已選 {len(selected)}／{len(all_items)}",
-            expanded=False,
-            key=f"exp-{dimension}",
-        ):
-            st.text_input(
-                "快速過濾（只影響可見項目）",
-                key=f"quick-{dimension}",
-                value=controller.quick_text[dimension],
-                on_change=_on_quick_filter,
-                args=(controller, dimension),
-            )
-            cols = st.columns(3)
-            if cols[0].button("全選可見", key=f"all-{dimension}"):
-                _apply_action(controller, dimension, "select_all")
-            if cols[1].button("取消可見", key=f"clear-{dimension}"):
-                _apply_action(controller, dimension, "clear")
-            if cols[2].button("反選可見", key=f"invert-{dimension}"):
-                _apply_action(controller, dimension, "invert")
-
-            chips_key = f"chips-{dimension}"
-            shown = [
-                item.value for item in visible if item.value in selected_set
-            ][:MAX_CHIPS]
-            if shown:
-                if set(st.session_state.get(chips_key, ())) != set(shown):
-                    st.session_state[chips_key] = list(shown)
-                st.pills(
-                    "已選（點一下可叉除）",
-                    options=shown,
-                    selection_mode="multi",
-                    key=chips_key,
-                    format_func=lambda value, counts=counts: f"{value}（{counts.get(value, 0)} 份）",
-                    on_change=_on_chips_change,
-                    args=(controller, dimension, shown),
-                )
-                if len(selected) > len(shown):
-                    st.caption(
-                        f"已選 {len(selected)} 項，只顯示目前可見的前 {len(shown)} 項；"
-                        "可用快速過濾縮小範圍。"
-                    )
+        with table_cols[idx]:
+            header_text = f"**{label}**（可選 {len(items)} 項"
+            if active and active != {"__NONE__"}:
+                header_text += f"，已篩選 {len(active)} 項）"
             else:
-                st.session_state.pop(chips_key, None)
-                st.caption(
-                    "目前沒有可見的已選項目（零選取時無法下載）。"
-                    if selected
-                    else "目前零選取；零選取時無法下載。"
-                )
+                header_text += "，未限制）"
+            st.markdown(header_text)
 
-            unselected = [item.value for item in visible if item.value not in selected_set]
-            if unselected:
-                st.multiselect(
-                    "從可見清單加入（可直接輸入搜尋）",
-                    options=unselected,
-                    key=f"add-{dimension}",
-                    format_func=lambda value, counts=counts: f"{value}（{counts.get(value, 0)} 份）",
-                    on_change=_on_add_selection,
-                    args=(controller, dimension),
-                )
-            st.caption(f"可見 {len(visible)} 項｜未選 {len(unselected)} 項｜括號內為份數")
+            btn_col1, btn_col2 = st.columns(2)
+            if active:
+                if btn_col1.button("恢復全部", key=f"clear-btn-{dimension}"):
+                    controller.clear_dimension_filters(dimension)
+                    st.rerun()
+            else:
+                if btn_col1.button("全不選", key=f"none-btn-{dimension}"):
+                    controller.set_dimension_filters(dimension, {"__NONE__"})
+                    st.rerun()
+
+            is_none_selected = active == {"__NONE__"}
+            table_data = [
+                {
+                    "選取": False if is_none_selected else (item.value in active if active else True),
+                    "名稱": item.value,
+                    "份數": str(item.count),
+                }
+                for item in items
+            ]
+
+            editor_key = f"table-editor-{dimension}"
+            edited = st.data_editor(
+                table_data,
+                key=editor_key,
+                height=300,
+                width="stretch",
+                hide_index=True,
+                column_config={
+                    "選取": st.column_config.CheckboxColumn("選取", width="small"),
+                    "名稱": st.column_config.TextColumn("名稱", disabled=True),
+                    "份數": st.column_config.TextColumn("份數", disabled=True, width="small"),
+                },
+            )
+
+            current_selected = {row["名稱"] for row in edited if row.get("選取")}
+            previous_selected = {
+                row["名稱"] for row in table_data if row.get("選取")
+            }
+            if current_selected != previous_selected:
+                if len(current_selected) == len(items) or len(current_selected) == 0:
+                    controller.clear_dimension_filters(dimension)
+                else:
+                    controller.set_dimension_filters(dimension, current_selected)
+                st.rerun()
 
     stats = controller.stats()
     col1, col2, col3, col4 = st.columns(4)
@@ -290,120 +284,10 @@ def _render_candidates(controller: AppController) -> None:
     )
 
 
-def _on_quick_filter(controller: AppController, dimension: str) -> None:
-    controller.quick_text[dimension] = st.session_state.get(f"quick-{dimension}", "")
-
-
-def _on_chips_change(
-    controller: AppController, dimension: str, shown: list[str]
-) -> None:
-    """叉掉 chips：只把被叉掉的項目移出選取，不重新查詢。"""
-    kept = set(st.session_state.get(f"chips-{dimension}", ()))
-    removed = tuple(value for value in shown if value not in kept)
-    if removed:
-        controller.remove_values(dimension, removed)
-
-
-def _on_add_selection(controller: AppController, dimension: str) -> None:
-    """從可見清單加入：僅更新本機選取。"""
-    chosen = tuple(st.session_state.get(f"add-{dimension}", ()))
-    if not chosen:
-        return
-    controller.add_values(dimension, chosen)
-    st.session_state[f"add-{dimension}"] = []
-
-
-def _apply_action(controller: AppController, dimension: str, action: str) -> None:
-    """全選／取消／反選可見：改完立刻重畫，避免同一輪顯示舊清單。"""
-    controller.apply_action(dimension, action)
-    _reset_candidate_dimension(dimension)
-    st.rerun()
-
-
-def _reset_candidate_dimension(dimension: str) -> None:
-    """按鈕造成外部變更後，讓 chips／加入清單重新初始化。"""
-    st.session_state.pop(f"chips-{dimension}", None)
-    st.session_state.pop(f"add-{dimension}", None)
-
-
 def _reset_candidate_widgets() -> None:
-    """重新查詢後清除各欄位的 UI 狀態（選取已由控制器重設）。"""
-    for dimension in ("exams", "categories", "subjects"):
-        for prefix in ("chips", "add", "quick", "exp"):
-            st.session_state.pop(f"{prefix}-{dimension}", None)
-
-
-def _preview_fingerprint(
-    controller: AppController, mode: PathMode, template: str | None
-) -> tuple:
-    """預覽識別碼；若控制器是熱重載前的舊版（缺此方法）則顯示提示而不是爆錯。"""
-    method = getattr(controller, "preview_fingerprint", None)
-    if method is None:
-        st.warning("程式已更新，請重新整理頁面（F5）再使用預覽。")
-        return ()
-    return method(mode, template)
-
-
-def _render_preview(controller: AppController, mode: PathMode, template: str | None) -> None:
-    if controller.snapshot is None:
-        return
-    st.subheader("歸檔路徑預覽")
-    st.caption("只計算路徑，不會建立或修改任何檔案；題型尚未確認的標示「暫定」。")
-
-    fingerprint = _preview_fingerprint(controller, mode, template)
-    stored = st.session_state.get("preview")
-    if stored is not None and stored[0] != fingerprint:
-        # 選取或歸檔設定改了，舊預覽不再可信
-        st.session_state.pop("preview", None)
-        stored = None
-
-    if st.button("計算預覽", key="preview-button"):
-        with st.spinner("計算中…（選取很多時需要幾秒）"):
-            plan = controller.preview(mode, template)
-        if plan is None:
-            st.error(controller.last_error or "無法計算預覽")
-            return
-        stored = (fingerprint, plan)
-        st.session_state["preview"] = stored
-        for warning in plan.warnings[:5]:
-            st.warning(warning)
-
-    if stored is None:
-        st.caption("還沒有預覽。按「計算預覽」可先確認檔名與資料夾，再決定要不要下載。")
-        return
-
-    plan = stored[1]
-    if not plan.files:
-        st.info("目前沒有可預覽的附件（請確認三個候選清單都至少選取一項）。")
-        return
-
-    folders = {
-        item.relative_path.split("/")[0]
-        for item in plan.files
-        if "/" in item.relative_path
-    }
-    provisional = sum(1 for item in plan.files if item.is_provisional)
-    st.caption(
-        f"共 {len(plan.files)} 個檔案、{len(folders)} 個資料夾；"
-        f"其中 {provisional} 個題型暫定（下載後會依實際內容改名）"
-    )
-    rows = [
-        {
-            "相對路徑": item.relative_path,
-            "角色": item.role.value,
-            "題型": item.question_type.value,
-            "暫定": "是" if item.is_provisional else "",
-        }
-        for item in plan.files[:PREVIEW_ROW_LIMIT]
-    ]
-    st.dataframe(
-        rows,
-        width="stretch",
-        hide_index=True,
-        column_config={"相對路徑": st.column_config.TextColumn(width="large")},
-    )
-    if len(plan.files) > PREVIEW_ROW_LIMIT:
-        st.caption(f"僅顯示前 {PREVIEW_ROW_LIMIT} 筆，共 {len(plan.files)} 筆")
+    """重新查詢後清除各欄位的 UI 狀態。"""
+    for dimension in DIMENSIONS:
+        st.session_state.pop(f"table-editor-{dimension}", None)
 
 
 def _render_task(controller: AppController, auto_refresh: bool) -> None:
@@ -471,7 +355,6 @@ def main() -> None:
     _render_reconcile(controller)
     _render_query(controller)
     _render_candidates(controller)
-    _render_preview(controller, page_settings["mode"], page_settings["template"])
     _render_task(controller, auto_refresh)
 
 

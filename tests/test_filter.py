@@ -395,3 +395,34 @@ def test_records_matching_keywords_exam_name(records) -> None:
 
     assert matched
     assert all(record.exam_name == EXAM_CHU for record in matched)
+
+
+def test_faceted_filtering_and_repent(records) -> None:
+    from app.engine.filter import build_faceted_candidates, apply_faceted_selection
+
+    # 1. 初始無篩選：候選為全量
+    initial = build_faceted_candidates(records)
+    assert len(initial.subjects) > 1
+
+    # 2. 選取單一科目：考試與類科應自動收斂
+    chosen_subject = initial.subjects[0].value
+    converged = build_faceted_candidates(
+        records, selected_subjects=frozenset([chosen_subject])
+    )
+    # 科目受自身無約束（或全量）
+    assert len(converged.subjects) == len(initial.subjects)
+    # 類科與考試則受 chosen_subject 約束而收斂
+    assert len(converged.categories) <= len(initial.categories)
+    assert len(converged.exams) <= len(initial.exams)
+
+    # 3. 反悔（取消選取科目）：放寬回原狀
+    restored = build_faceted_candidates(records, selected_subjects=frozenset())
+    assert len(restored.categories) == len(initial.categories)
+    assert len(restored.exams) == len(initial.exams)
+
+    # 4. 取得符合條件的紀錄
+    selected = apply_faceted_selection(
+        records, selected_subjects=frozenset([chosen_subject])
+    )
+    assert len(selected) > 0
+    assert all(r.subject == chosen_subject for r in selected)
