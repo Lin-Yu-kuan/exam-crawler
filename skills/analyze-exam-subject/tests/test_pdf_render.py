@@ -160,6 +160,24 @@ class RenderTests(unittest.TestCase):
         self.assertEqual(resumed["documents"][0]["status"], "failed")
         self.assertEqual(resumed["documents"][0]["pages"], [])
 
+    def test_unselected_file_excluded_and_failed_page_retried(self) -> None:
+        (self.root / "未選科目.pdf").write_bytes(b"broken unselected pdf")
+        self.data = tool.inventory(self.root)
+        original = renderer.render_page
+        def fail_page(pdf: object, number: int, *args: object) -> dict:
+            if number == 2:
+                raise ValueError("模擬單頁失敗")
+            return original(pdf, number, *args)
+        with patch.object(renderer, "render_page", side_effect=fail_page):
+            partial = self.run_render()
+        self.assertEqual(len(partial["documents"]), 1)
+        self.assertEqual(partial["status"], "partial")
+        resumed = self.run_render(resume_path=self.output)
+        rows = resumed["documents"][0]["pages"]
+        self.assertTrue(rows[0]["reused"])
+        self.assertFalse(rows[1]["reused"])
+        self.assertEqual(resumed["status"], "rendered")
+
     def test_cli_and_unsupported_resume(self) -> None:
         import subprocess
         inventory = self.base / "inventory.json"

@@ -4,6 +4,12 @@ inventory、selection、extraction 與 render-index 使用 schema_version=1；�
 
 JSON 使用 UTF-8。檔案路徑保存絕對路徑，頁碼為 PDF 一基頁碼，不是印刷頁碼。未知值用 null，不能編造 ID 或年度。
 
+預設新增 [精簡分析契約](compact-analysis.md)。AI 只產生短欄位結果，由 merge 補齊 question-index。summary／reason／evidence_excerpt 不再是每題必填；一般題可為空，頁碼與圖片證據仍保留。parent_question_id 可省略，以 countable=false 排除已拆分父題。
+
+work.json 保存 config、config_hash、來源 registry、batches 與可重用 cache，僅供本機程式使用。packet 檔才提供宿主當批輸入。question-index 的 cache 是整卷精簡結果與 complete 標記；config_hash 涵蓋備考科目、目標條件、分類表及版本，來源 cache_key 另涵蓋 PDF／圖片雜湊及來源 metadata。無此欄位的舊索引不能當作分析快取。
+
+summary.json 保存唯一相關題數、補充題數、待確認數、coverage、主題計數、每主題有限代表題及年度考試分層。分類時使用 r/c/i/u；落盤索引轉為原本完整 relevance 列舉。不把 summary 的文字大小視為模型 Token 用量。
+
 ## inventory.json（工具生成）
 
 root、files、contents、warnings。files 每筆有 path、relative_path、sha256、size、status、metadata；metadata 為 manifest 來源關聯列表。contents 以 sha256 分組且保留 paths。雜湊是內容識別，不是命題事件識別。

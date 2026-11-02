@@ -94,3 +94,22 @@ def test_metric_row_reflects_initial_selection(candidates_app: AppTest) -> None:
     assert int(metrics["已選考科"]) > 0
     assert "試題附件" in metrics
     assert "答案附件" in metrics
+
+
+def test_none_button_sets_zero_selection_and_disables_download() -> None:
+    app = AppTest.from_string(
+        SCRIPT_TEMPLATE.replace("__FIXTURE__", str(FIXTURE)), default_timeout=60
+    )
+    app.run()
+    assert not app.exception
+
+    # 點擊科目欄的「全不選」按鈕
+    none_btn = next(b for b in app.button if b.key == "none-btn-subjects")
+    none_btn.click().run()
+    assert not app.exception
+
+    metrics = {m.label: m.value for m in app.metric}
+    assert int(metrics["已選考科"]) == 0
+    ctrl = app.session_state["ctrl"]
+    assert ctrl.active_filters["subjects"] == set()
+    assert ctrl.can_download() is False

@@ -414,3 +414,41 @@ def test_progress_after_restart_returns_none(html_dir) -> None:
     tasks.get = broken  # type: ignore[method-assign]
 
     assert controller.progress() is None
+
+
+def test_deselect_last_item_sets_zero_selection_and_blocks_download(html_dir) -> None:
+    """取消最後一個勾選時應變為零選取並禁用下載，而非恢復全選。"""
+    controller, _, _ = make_controller(html_dir)
+    controller.query(QuerySpec(113, 113))
+
+    # 先只勾選單一科目
+    controller.set_dimension_filters("subjects", {"國文"})
+    assert controller.stats().records > 0
+    assert controller.can_download() is True
+
+    # 取消最後一個勾選（傳入空集合）
+    controller.set_dimension_filters("subjects", set())
+    assert controller.active_filters["subjects"] == set()
+    assert controller.state is not None
+    assert controller.state.subjects == frozenset()
+    assert controller.stats().records == 0
+    assert controller.can_download() is False
+
+
+def test_re_query_resets_active_filters(html_dir) -> None:
+    """重新查詢成功後，必須清除舊的 active_filters，避免操作另一欄時因殘留條件變成 0 筆。"""
+    controller, _, _ = make_controller(html_dir)
+    controller.query(QuerySpec(113, 113))
+
+    # 模擬前一次查詢留下的篩選條件
+    controller.set_dimension_filters("subjects", {"不存在於新查詢的舊科目"})
+    assert controller.stats().records == 0
+
+    # 重新查詢成功後，active_filters 應全部重設為 None（不限）
+    controller.query(QuerySpec(113, 113))
+    assert controller.active_filters == {"exams": None, "categories": None, "subjects": None}
+    assert controller.stats().records == 371
+
+    # 此時操作另一欄（例如勾選初等考試），不會被舊科目條件影響而變成 0 筆
+    controller.set_dimension_filters("exams", {"113年公務人員初等考試"})
+    assert controller.stats().records == 56

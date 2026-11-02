@@ -1,5 +1,7 @@
 # 安裝與工具使用
 
+大量題庫預設採 [精簡考點分析](compact-analysis.md)，另有純標準函式庫的 `scripts/compact_analysis.py` 提供 prepare／packet／merge／summary。AI 不重複填寫來源欄位，統計與分析快取在本機處理；原有 inventory／extract／render 介面保持相容。
+
 ## 安裝
 
 整個 `analyze-exam-subject` 資料夾可直接攜帶，不匯入爬蟲程式碼。從原始套件複製，保留 scripts 與 references 相對結構；不要只複製 SKILL.md。安裝前檢查目標是否已有同名版本，勿盲目覆寫。

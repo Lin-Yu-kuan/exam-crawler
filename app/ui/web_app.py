@@ -91,12 +91,30 @@ def build_controller(
     )
 
 
+EXPECTED_CONTROLLER_API_VERSION = 3
+
+
+def _reload_submodules_if_needed() -> None:
+    """當子模組在開發期間更新但 Streamlit 僅重跑 web_app.py 時，強制重新載入子模組。"""
+    global CONTROLLER_API_VERSION, AppController
+    if getattr(AppController, "api_version", None) != EXPECTED_CONTROLLER_API_VERSION:
+        import importlib
+        import app.engine.filter as filter_mod
+        import app.ui.controller as ctrl_mod
+
+        importlib.reload(filter_mod)
+        importlib.reload(ctrl_mod)
+        CONTROLLER_API_VERSION = ctrl_mod.CONTROLLER_API_VERSION
+        AppController = ctrl_mod.AppController
+
+
 def _ensure_controller(settings: dict) -> AppController:
     """設定變更時重建控制器；重跑時沿用既有狀態，避免重複查詢或重複下載。
 
     另外檢查快取的實例是否屬於「目前的」AppController 類別：開發時熱重載會換掉
     類別物件，舊實例會缺少新方法，必須重建才不會出現 AttributeError。
     """
+    _reload_submodules_if_needed()
     key = (
         settings["root"],
         settings["db_path"],
@@ -115,7 +133,19 @@ def _ensure_controller(settings: dict) -> AppController:
         or getattr(cached, "api_version", None) != CONTROLLER_API_VERSION
     )
     if stale or st.session_state.get("settings") != key:
-        st.session_state["controller"] = build_controller(**settings)
+        new_ctrl = build_controller(**settings)
+        prev_snapshot = getattr(cached, "snapshot", None) if stale else None
+        if prev_snapshot is not None:
+            from app.engine.filter import FilterState, build_candidates
+
+            new_ctrl.snapshot = prev_snapshot
+            new_ctrl.state = build_candidates(
+                prev_snapshot.records, FilterState()
+            ).initial_state(
+                year_start=prev_snapshot.spec.start_year,
+                year_end=prev_snapshot.spec.end_year,
+            )
+        st.session_state["controller"] = new_ctrl
         st.session_state["settings"] = key
         _reset_candidate_widgets()
     return st.session_state["controller"]
@@ -371,12 +401,13 @@ def _render_candidates(controller: AppController) -> None:
     if controller.snapshot is None or controller.state is None:
         return
 
-    has_active_filters = any(controller.active_filters[dim] for dim in DIMENSIONS)
+    has_active_filters = any(controller.active_filters[dim] is not None for dim in DIMENSIONS)
     col_desc, col_reset = st.columns([3, 2])
     col_desc.caption("依考試、類科與科目交叉挑選；三欄會同步更新。")
     if has_active_filters:
         if col_reset.button("清除所有篩選（還原全部）", key="reset-all-filters"):
             controller.clear_all_filters()
+            _reset_candidate_widgets()
             st.rerun()
 
     candidates = controller.faceted_candidates()
@@ -389,28 +420,33 @@ def _render_candidates(controller: AppController) -> None:
 
         with table_cols[idx]:
             header_text = f"**{label}**（可選 {len(items)} 項"
-            if active and active != {"__NONE__"}:
-                header_text += f"，已篩選 {len(active)} 項）"
-            elif active == {"__NONE__"}:
+            if active is None:
+                header_text += "，全部選取）"
+            elif len(active) == 0:
                 header_text += "，已選 0 項）"
             else:
-                header_text += "，全部選取）"
+                header_text += f"，已篩選 {len(active)} 項）"
             st.markdown(header_text)
 
             btn_col1, btn_col2 = st.columns(2)
-            if active:
+            if active is not None:
                 if btn_col1.button("恢復全部", key=f"clear-btn-{dimension}"):
                     controller.clear_dimension_filters(dimension)
+                    _reset_candidate_widgets()
+                    st.rerun()
+                if len(active) > 0 and btn_col2.button("全不選", key=f"none-btn-{dimension}"):
+                    controller.set_dimension_filters(dimension, set())
+                    _reset_candidate_widgets()
                     st.rerun()
             else:
                 if btn_col1.button("全不選", key=f"none-btn-{dimension}"):
-                    controller.set_dimension_filters(dimension, {"__NONE__"})
+                    controller.set_dimension_filters(dimension, set())
+                    _reset_candidate_widgets()
                     st.rerun()
 
-            is_none_selected = active == {"__NONE__"}
             table_data = [
                 {
-                    "選取": False if is_none_selected else (item.value in active if active else True),
+                    "選取": True if active is None else (item.value in active),
                     "名稱": item.value,
                     "份數": str(item.count),
                 }
@@ -436,10 +472,11 @@ def _render_candidates(controller: AppController) -> None:
                 row["名稱"] for row in table_data if row.get("選取")
             }
             if current_selected != previous_selected:
-                if len(current_selected) == len(items) or len(current_selected) == 0:
+                if len(items) > 0 and len(current_selected) == len(items):
                     controller.clear_dimension_filters(dimension)
                 else:
                     controller.set_dimension_filters(dimension, current_selected)
+                _reset_candidate_widgets()
                 st.rerun()
 
 

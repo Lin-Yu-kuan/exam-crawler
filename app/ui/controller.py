@@ -42,7 +42,7 @@ DIMENSION_LABELS = {"exams": "考試", "categories": "類科", "subjects": "科�
 
 #: 控制器對外介面版本；UI 以此判斷 session 內的實例是否過期（熱重載後必須重建）。
 #: 只要新增／修改 AppController 的公開方法就必須 +1。
-CONTROLLER_API_VERSION = 2
+CONTROLLER_API_VERSION = 3
 
 
 class QueryServiceProtocol(Protocol):
@@ -111,7 +111,7 @@ class AppController:
         self.reconcile_report: ReconcileReport | None = None
         self._reconciled = False
         self._candidates_cache: tuple[tuple, CandidateSets] | None = None
-        self.active_filters: dict[str, set[str]] = {dimension: set() for dimension in DIMENSIONS}
+        self.active_filters: dict[str, set[str] | None] = {dimension: None for dimension in DIMENSIONS}
 
     # --- 查詢 ---------------------------------------------------------
     def query(
@@ -141,6 +141,8 @@ class AppController:
         self.snapshot = snapshot
         self.task_id = None
         self.quick_text = {dimension: "" for dimension in DIMENSIONS}
+        self.active_filters = {dimension: None for dimension in DIMENSIONS}
+        self._candidates_cache = None
         candidates = build_candidates(snapshot.records, FilterState())
         self.state = candidates.initial_state(
             year_start=spec.start_year, year_end=spec.end_year
@@ -158,6 +160,10 @@ class AppController:
 
 
     # --- 多向互相收斂選取 ---------------------------------------------
+    @staticmethod
+    def _as_frozenset(values: set[str] | None) -> frozenset[str] | None:
+        return None if values is None else frozenset(values)
+
     def faceted_candidates(self) -> CandidateSets:
         """多向互相收斂候選清單；母體永遠完整保存。"""
         if self.snapshot is None:
@@ -165,28 +171,28 @@ class AppController:
         spec = self.snapshot.spec
         return build_faceted_candidates(
             self.snapshot.records,
-            selected_exams=frozenset(self.active_filters["exams"]),
-            selected_categories=frozenset(self.active_filters["categories"]),
-            selected_subjects=frozenset(self.active_filters["subjects"]),
+            selected_exams=self._as_frozenset(self.active_filters["exams"]),
+            selected_categories=self._as_frozenset(self.active_filters["categories"]),
+            selected_subjects=self._as_frozenset(self.active_filters["subjects"]),
             year_start=spec.start_year,
             year_end=spec.end_year,
         )
 
-    def set_dimension_filters(self, dimension: str, selected_values: set[str]) -> None:
-        """更新單一維度的主動篩選條件（空集合代表不限），並同步更新底層 state。"""
+    def set_dimension_filters(self, dimension: str, selected_values: set[str] | None) -> None:
+        """更新單一維度的主動篩選條件（None 代表不限，空集合代表零選取），並同步更新底層 state。"""
         if dimension not in DIMENSIONS:
             raise ValueError(f"未知欄位：{dimension}")
-        self.active_filters[dimension] = set(selected_values)
+        self.active_filters[dimension] = None if selected_values is None else set(selected_values)
         self._sync_state_from_filters()
 
     def clear_dimension_filters(self, dimension: str) -> None:
         """清空單一維度篩選（恢復為不限）。"""
-        self.set_dimension_filters(dimension, set())
+        self.set_dimension_filters(dimension, None)
 
     def clear_all_filters(self) -> None:
         """清空所有維度篩選（全部恢復原貌）。"""
         for dim in DIMENSIONS:
-            self.active_filters[dim] = set()
+            self.active_filters[dim] = None
         self._sync_state_from_filters()
 
     def _sync_state_from_filters(self) -> None:
@@ -195,13 +201,18 @@ class AppController:
             return
         candidates = self.faceted_candidates()
         spec = self.snapshot.spec
-        exams = self.active_filters["exams"] or {item.value for item in candidates.exams}
-        categories = self.active_filters["categories"] or {item.value for item in candidates.categories}
-        subjects = self.active_filters["subjects"] or {item.value for item in candidates.subjects}
+
+        def resolve_dim(dim: str, items: tuple[Candidate, ...]) -> frozenset[str]:
+            active = self.active_filters[dim]
+            available = {item.value for item in items}
+            if active is None:
+                return frozenset(available)
+            return frozenset(active & available)
+
         self.state = FilterState(
-            exams=frozenset(exams),
-            categories=frozenset(categories),
-            subjects=frozenset(subjects),
+            exams=resolve_dim("exams", candidates.exams),
+            categories=resolve_dim("categories", candidates.categories),
+            subjects=resolve_dim("subjects", candidates.subjects),
             year_start=spec.start_year,
             year_end=spec.end_year,
         )

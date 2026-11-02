@@ -141,54 +141,63 @@ def expand_exam_query(value: str) -> tuple[str, ...]:
 
 @dataclass(frozen=True)
 class _Matcher:
-    """預先正規化的比對器；空鍵集合代表不限制。"""
+    """預先正規化的候選比對器；None 代表不限制，空集合代表零選取。"""
 
-    exam_keys: frozenset[str] = frozenset()
-    category_keys: frozenset[str] = frozenset()
-    subject_keys: frozenset[str] = frozenset()
+    exam_keys: frozenset[str] | None = None
+    category_keys: frozenset[str] | None = None
+    subject_keys: frozenset[str] | None = None
     year_start: int | None = None
     year_end: int | None = None
 
     def match(self, record: ExamRecord) -> bool:
         if not _within_years(record, self.year_start, self.year_end):
             return False
-        if self.exam_keys and not self._match_exam(record):
+        if self.exam_keys is not None and not self._match_exam(record):
             return False
-        if self.category_keys and not self._contains(self.category_keys, record.category_key):
+        if self.category_keys is not None and not self._equals(self.category_keys, record.category_key):
             return False
-        if self.subject_keys and not self._contains(self.subject_keys, record.subject_key):
+        if self.subject_keys is not None and not self._equals(self.subject_keys, record.subject_key):
             return False
         return True
 
     def _match_exam(self, record: ExamRecord) -> bool:
+        assert self.exam_keys is not None
+        if record.exam_name_key in self.exam_keys:
+            return True
         short_key = compact_key(record.exam_short_name) if record.exam_short_name else ""
-        for key in self.exam_keys:
-            if key in record.exam_name_key:
-                return True
-            if short_key and key in short_key:
-                return True
+        if short_key and short_key in self.exam_keys:
+            return True
         return False
 
     @staticmethod
-    def _contains(keys: frozenset[str], value_key: str) -> bool:
-        return any(key in value_key for key in keys)
+    def _equals(keys: frozenset[str], value_key: str) -> bool:
+        return value_key in keys
 
 
 def _build_matcher(
     *,
-    exams: frozenset[str],
-    categories: frozenset[str],
-    subjects: frozenset[str],
+    exams: frozenset[str] | None,
+    categories: frozenset[str] | None,
+    subjects: frozenset[str] | None,
     year_start: int | None,
     year_end: int | None,
 ) -> _Matcher:
-    exam_keys: set[str] = set()
-    for value in exams:
-        exam_keys.update(key for key in expand_exam_query(value) if key)
     return _Matcher(
-        exam_keys=frozenset(exam_keys),
-        category_keys=frozenset(compact_key(value) for value in categories),
-        subject_keys=frozenset(compact_key(value) for value in subjects),
+        exam_keys=(
+            frozenset(compact_key(value) for value in exams if compact_key(value))
+            if exams is not None
+            else None
+        ),
+        category_keys=(
+            frozenset(compact_key(value) for value in categories if compact_key(value))
+            if categories is not None
+            else None
+        ),
+        subject_keys=(
+            frozenset(compact_key(value) for value in subjects if compact_key(value))
+            if subjects is not None
+            else None
+        ),
         year_start=year_start,
         year_end=year_end,
     )
@@ -272,9 +281,9 @@ def build_candidates(records: tuple[ExamRecord, ...], state: FilterState) -> Can
 
     def pool(**constraints: frozenset[str]) -> tuple[ExamRecord, ...]:
         matcher = _build_matcher(
-            exams=constraints.get("exams", frozenset()),
-            categories=constraints.get("categories", frozenset()),
-            subjects=constraints.get("subjects", frozenset()),
+            exams=constraints.get("exams") or None,
+            categories=constraints.get("categories") or None,
+            subjects=constraints.get("subjects") or None,
             year_start=state.year_start,
             year_end=state.year_end,
         )
@@ -427,20 +436,21 @@ def resolve_frozen(
 def build_faceted_candidates(
     records: tuple[ExamRecord, ...],
     *,
-    selected_exams: frozenset[str] = frozenset(),
-    selected_categories: frozenset[str] = frozenset(),
-    selected_subjects: frozenset[str] = frozenset(),
+    selected_exams: frozenset[str] | None = None,
+    selected_categories: frozenset[str] | None = None,
+    selected_subjects: frozenset[str] | None = None,
     year_start: int | None = None,
     year_end: int | None = None,
 ) -> CandidateSets:
     """依多向交叉篩選計算三個維度的候選清單與份數。
 
-    任一集合為空代表該維度不設限；計算任一維度之候選時，受另外兩個維度的篩選條件約束。
+    None 代表該維度不設限；空集合代表該維度零選取；
+    計算任一維度之候選時，受另外兩個維度的篩選條件約束。
     """
     def pool(
-        exam_filter: frozenset[str],
-        cat_filter: frozenset[str],
-        sub_filter: frozenset[str],
+        exam_filter: frozenset[str] | None,
+        cat_filter: frozenset[str] | None,
+        sub_filter: frozenset[str] | None,
     ) -> tuple[ExamRecord, ...]:
         matcher = _build_matcher(
             exams=exam_filter,
@@ -451,9 +461,9 @@ def build_faceted_candidates(
         )
         return tuple(record for record in records if matcher.match(record))
 
-    exams_pool = pool(frozenset(), selected_categories, selected_subjects)
-    cats_pool = pool(selected_exams, frozenset(), selected_subjects)
-    subs_pool = pool(selected_exams, selected_categories, frozenset())
+    exams_pool = pool(None, selected_categories, selected_subjects)
+    cats_pool = pool(selected_exams, None, selected_subjects)
+    subs_pool = pool(selected_exams, selected_categories, None)
 
     exams = _count_by(exams_pool, "exam_name")
     categories = _count_by(cats_pool, "category")
@@ -478,13 +488,13 @@ def build_faceted_candidates(
 def apply_faceted_selection(
     records: tuple[ExamRecord, ...],
     *,
-    selected_exams: frozenset[str] = frozenset(),
-    selected_categories: frozenset[str] = frozenset(),
-    selected_subjects: frozenset[str] = frozenset(),
+    selected_exams: frozenset[str] | None = None,
+    selected_categories: frozenset[str] | None = None,
+    selected_subjects: frozenset[str] | None = None,
     year_start: int | None = None,
     year_end: int | None = None,
 ) -> tuple[ExamRecord, ...]:
-    """回傳同時符合三維度主動篩選條件的考科紀錄。空集合代表不限。"""
+    """回傳同時符合三維度主動篩選條件的考科紀錄。None 代表不限，空集合代表零選取。"""
     matcher = _build_matcher(
         exams=selected_exams,
         categories=selected_categories,

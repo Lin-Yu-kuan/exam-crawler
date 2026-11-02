@@ -1,20 +1,27 @@
 # 本機驗證紀錄
 
-日期：2026-11-02（Asia/Taipei）。環境：Windows、Python 3.14、pypdf 6.21.4。
+日期：2026-11-02（Asia/Taipei）。環境：Windows、Python 3.14、pypdf 6.21.4、pypdfium2 5.14.0、PDFium 156.0.8076.0。
 
 ## 已完成
 
-- `python -m unittest discover -s skills/analyze-exam-subject/tests -v`：8 項中 7 項通過，1 項略過。
+- `python -m unittest discover -s skills/analyze-exam-subject/tests -v`：26 項中 25 項通過，1 項略過。
 - 通過：中文／巢狀路徑、輸出排除、SHA-256 去重及來源保留、損壞 PDF、無文字頁、未選取阻止全文擷取、內容變更失效、恢復範圍核對、已知 manifest 多事件唯讀、未知 manifest 退回、CLI 與輸出不覆寫。
 - 靜態檢查通過：兩欄 frontmatter、技能名稱規則、描述長度、所有 Markdown 相對引用、Python 語法與無宿主專用工具要求。
 - 合科行為案例已逐項人工核對技能規則：使用者決定來源、題目級排除純 SQL、保留頁碼題號、不同官方科目合併報告。這是指令審查，並非真實考題語意分類測試。
+- 新增實際 PDFium 測試：六種頁面、像素上限、旋轉方向、逐頁中斷恢復、快取雜湊驗證、損壞圖片修復、DPI 改變失效、來源變更失效、未選來源排除、單頁失敗重試及 render CLI。
+- 以所有頁面維持 not_checked 模擬沒有視覺判讀；確認有文字頁也產生待檢視圖片。部分報告的規則已審查，但尚未完成宿主無視覺模式的端到端報告生成測試。
+- Codex 此環境已透過實際圖片工具開啟六頁合成樣本：純文字、掃描圖、圖文混合、向量樹圖、上標公式、旋轉頁；確認內容可見。這是渲染目視檢查，不是複雜考題辨識準確率測試。
+- 已取得 PyYAML 6.0.3，skill-creator 的 quick_validate.py 本次執行通過（Skill is valid）。
+- 精簡分析新增 10 項測試：來源補齊、主題多標籤去重、packet 不含完整登錄或全文、衝突拒絕、未視覺核對不進主統計、整卷快取、分類及圖片變更失效、目標考試分層、父題排除、未知引用拒絕、新試卷只排新批次。
+- 合成兩題的精簡回覆與補齊索引已比較 JSON 位元組大小，精簡回覆較小且來源可還原；這不是實際模型 Token 節省率，也未量測宿主歷史上下文成本。
 
 ## 限制與待驗證
 
 - 符號連結測試因 Windows 缺少建立權限略過；junction 實際逃逸案例尚未測試。
-- skill-creator 的 quick_validate.py 因環境缺少 PyYAML 無法執行；嘗試取得依賴時 PyPI DNS 無法解析。已改用標準函式庫檢查本套件的簡單兩欄 frontmatter 與引用，不宣稱官方驗證器通過。
 - 未在 Antigravity 實際載入與操作，也未執行雙平台端到端考題分析；格式可攜不等於雙平台行為已驗證。
 - Python 3.10 為設計最低版本，實際執行版本為 3.14；其他 Python 版本與作業系統尚待實測。
 - 尚未安裝到任何宿主技能目錄，也未修改全域設定。
 
 此執行環境的系統暫存目錄寫入受限，測試時將 TEMP 與 TMP 設為專案 `.pytest_cache/skill-temp`。一般環境可直接使用系統暫存目錄。
+
+本次渲染與格式驗證依賴裝在專案 `.pytest_cache/visual-deps`，透過 PYTHONPATH 使用；未修改全域 Python。合成 PDF／圖片只存於測試快取，不作為交付題庫。

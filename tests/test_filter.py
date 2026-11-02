@@ -122,18 +122,86 @@ def test_zero_selection_returns_nothing_and_blocks_download(records, all_state) 
     assert can_download(state, stats) is False
 
 
-def test_partial_text_matching_uses_normalized_keys(records, all_state) -> None:
-    """來源在名稱中插入排版空白，比對仍可命中。"""
-    state = pick(
+def test_exact_normalized_matching_handles_whitespace_and_rejects_substrings(records, all_state) -> None:
+    """勾選清單採正規化後精確比對：忽略排版空白，但不誤中子字串。"""
+    state_ok = pick(
         all_state,
         exams=frozenset({EXAM_CHU}),
-        categories=frozenset({"一般行政"}),
+        categories=frozenset({"初等考試_ 一般 行政"}),
+        subjects=frozenset({"法 學 大 意"}),
+    )
+    selected = apply_selection(records, state_ok)
+    assert len(selected) == 1
+    assert selected[0].subject == "法學大意"
+
+    # 僅傳入子字串「法學」時，不應命中「法學大意」
+    state_sub = pick(
+        all_state,
+        exams=frozenset({EXAM_CHU}),
+        categories=frozenset({"初等考試_一般行政"}),
         subjects=frozenset({"法學"}),
     )
-    selected = apply_selection(records, state)
+    assert apply_selection(records, state_sub) == ()
 
-    assert len(selected) >= 1
-    assert all("法學" in record.subject for record in selected)
+
+def test_subject_selection_does_not_match_containing_subjects() -> None:
+    """勾選「資料結構」只會命中「資料結構」，不會連包含該字串的其他科目一起選入。"""
+    from app.engine.filter import apply_faceted_selection, build_faceted_candidates
+
+    r1 = ExamRecord(
+        record_id="r1",
+        official_id=None,
+        year=113,
+        exam_name="113年高考三級",
+        exam_short_name=None,
+        category="高考三級_資訊處理",
+        subject="資料結構",
+        level=None,
+        source_page="test",
+        assets=(),
+        exam_name_key=compact_key("113年高考三級"),
+        category_key=compact_key("高考三級_資訊處理"),
+        subject_key=compact_key("資料結構"),
+    )
+    r2 = ExamRecord(
+        record_id="r2",
+        official_id=None,
+        year=113,
+        exam_name="113年專技高考",
+        exam_short_name=None,
+        category="專技高考_資訊技師",
+        subject="資料結構與資料庫及資料探勘",
+        level=None,
+        source_page="test",
+        assets=(),
+        exam_name_key=compact_key("113年專技高考"),
+        category_key=compact_key("專技高考_資訊技師"),
+        subject_key=compact_key("資料結構與資料庫及資料探勘"),
+    )
+    r3 = ExamRecord(
+        record_id="r3",
+        official_id=None,
+        year=113,
+        exam_name="113年關務特考",
+        exam_short_name=None,
+        category="關務三等_資訊處理",
+        subject="計算機概論(包括計算機結構、資料結構、程式設計與資料庫)",
+        level=None,
+        source_page="test",
+        assets=(),
+        exam_name_key=compact_key("113年關務特考"),
+        category_key=compact_key("關務三等_資訊處理"),
+        subject_key=compact_key("計算機概論(包括計算機結構、資料結構、程式設計與資料庫)"),
+    )
+    pool = (r1, r2, r3)
+
+    selected = apply_faceted_selection(pool, selected_subjects=frozenset({"資料結構"}))
+    assert [r.record_id for r in selected] == ["r1"]
+
+    faceted = build_faceted_candidates(pool, selected_subjects=frozenset({"資料結構"}))
+    assert [c.value for c in faceted.exams] == ["113年高考三級"]
+    assert [c.value for c in faceted.categories] == ["高考三級_資訊處理"]
+    assert len(faceted.subjects) == 3
 
 
 def test_year_range_filter(records, all_state) -> None:
@@ -312,14 +380,29 @@ def test_short_name_fallback_uses_raw_string(records, all_state) -> None:
     assert apply_selection(records, state) == ()
 
 
-def test_short_name_matches_real_exam_name(records, all_state) -> None:
-    state = pick(
-        all_state,
+def test_short_name_matches_when_record_has_exam_short_name() -> None:
+    rec = _make_record("r-short", subject="國文")
+    rec_with_short = ExamRecord(
+        record_id=rec.record_id,
+        official_id=rec.official_id,
+        year=rec.year,
+        exam_name=rec.exam_name,
+        exam_short_name="初考",
+        category=rec.category,
+        subject=rec.subject,
+        level=rec.level,
+        source_page=rec.source_page,
+        assets=rec.assets,
+        exam_name_key=rec.exam_name_key,
+        category_key=rec.category_key,
+        subject_key=rec.subject_key,
+    )
+    state = FilterState(
         exams=frozenset({"初考"}),
-        categories=frozenset({"一般行政"}),
+        categories=frozenset({"初等考試_一般行政"}),
         subjects=frozenset({"國文"}),
     )
-    selected = apply_selection(records, state)
+    selected = apply_selection((rec_with_short,), state)
     assert len(selected) == 1
     assert selected[0].exam_name == EXAM_CHU
 
@@ -415,12 +498,19 @@ def test_faceted_filtering_and_repent(records) -> None:
     assert len(converged.categories) <= len(initial.categories)
     assert len(converged.exams) <= len(initial.exams)
 
-    # 3. 反悔（取消選取科目）：放寬回原狀
-    restored = build_faceted_candidates(records, selected_subjects=frozenset())
+    # 3. 反悔（恢復不限 None）：放寬回原狀
+    restored = build_faceted_candidates(records, selected_subjects=None)
     assert len(restored.categories) == len(initial.categories)
     assert len(restored.exams) == len(initial.exams)
 
-    # 4. 取得符合條件的紀錄
+    # 4. 零選取（空集合 frozenset()）：明確區分「不限」與「零選取」
+    zero_selected = build_faceted_candidates(records, selected_subjects=frozenset())
+    assert len(zero_selected.categories) == 0
+    assert len(zero_selected.exams) == 0
+    assert len(zero_selected.subjects) == len(initial.subjects)
+    assert apply_faceted_selection(records, selected_subjects=frozenset()) == ()
+
+    # 5. 取得符合條件的紀錄
     selected = apply_faceted_selection(
         records, selected_subjects=frozenset([chosen_subject])
     )
