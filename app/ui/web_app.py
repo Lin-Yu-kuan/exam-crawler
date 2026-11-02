@@ -128,10 +128,9 @@ def build_tree_preview(root_dir: str, template: str) -> str:
 
 def _sidebar() -> tuple[dict, bool]:
     with st.sidebar:
-        st.subheader("下載設定")
+        st.subheader("題庫歸檔")
+        st.caption("設定一次，專心挑選需要的試題。")
         root = st.text_input("下載根目錄", DEFAULT_ROOT)
-        db_path = st.text_input("資料庫檔案", str(Path(root) / "manifest.db"))
-        workers = st.slider("下載併發數", MIN_WORKERS, MAX_WORKERS, DEFAULT_WORKERS)
         mode_label = st.selectbox("歸檔模式", list(MODE_LABELS))
         mode = MODE_LABELS[mode_label]
         template = ""
@@ -179,15 +178,18 @@ def _sidebar() -> tuple[dict, bool]:
                 filename = f"{fn_prefix}_{{題型}}.pdf" if fn_prefix else "{題型}.pdf"
                 template = "/".join(folders + [filename])
 
-                st.caption("即時目錄樹狀圖預覽：")
+                st.caption("歸檔結構預覽")
                 st.code(build_tree_preview(root, template), language="text")
         else:
             with st.container(border=True):
                 template = DEFAULT_TEMPLATES[mode.name]
-                st.caption("即時目錄樹狀圖預覽：")
+                st.caption("歸檔結構預覽")
                 st.code(build_tree_preview(root, template), language="text")
 
-        auto_refresh = st.checkbox("下載時自動更新進度", value=True)
+        with st.expander("進階設定"):
+            db_path = st.text_input("資料庫檔案", str(Path(root) / "manifest.db"))
+            workers = st.slider("下載併發數", MIN_WORKERS, MAX_WORKERS, DEFAULT_WORKERS)
+            auto_refresh = st.checkbox("下載時自動更新進度", value=True)
         st.caption("本工具只在本機執行；查詢與下載需要網路。")
     return (
         dict(
@@ -302,7 +304,7 @@ def _render_query(controller: AppController) -> None:
                 "只有想確認官網有沒有更新時才需要勾選，勾了會重新查詢（約 11 秒）。"
             ),
         )
-        submitted = st.form_submit_button("開始過濾", type="primary")
+        submitted = st.form_submit_button("查詢試題", type="primary", width="stretch")
 
     if submitted:
         spec = (
@@ -324,7 +326,7 @@ def _render_query(controller: AppController) -> None:
 
     snapshot = controller.snapshot
     if snapshot is None:
-        st.caption("尚未取得資料。按「開始過濾」後會顯示候選清單與下載統計。")
+        st.caption("尚未取得資料。按「查詢試題」後會顯示候選清單與下載統計。")
         return
 
     stamp = "（快取）" if snapshot.cached else "（本次查詢）"
@@ -341,7 +343,8 @@ def _render_candidates(controller: AppController) -> None:
         return
 
     has_active_filters = any(controller.active_filters[dim] for dim in DIMENSIONS)
-    col_desc, col_reset = st.columns([4, 1])
+    col_desc, col_reset = st.columns([3, 2])
+    col_desc.caption("依考試、類科與科目交叉挑選；三欄會同步更新。")
     if has_active_filters:
         if col_reset.button("清除所有篩選（還原全部）", key="reset-all-filters"):
             controller.clear_all_filters()
@@ -359,8 +362,10 @@ def _render_candidates(controller: AppController) -> None:
             header_text = f"**{label}**（可選 {len(items)} 項"
             if active and active != {"__NONE__"}:
                 header_text += f"，已篩選 {len(active)} 項）"
+            elif active == {"__NONE__"}:
+                header_text += "，已選 0 項）"
             else:
-                header_text += "，未限制）"
+                header_text += "，全部選取）"
             st.markdown(header_text)
 
             btn_col1, btn_col2 = st.columns(2)
@@ -408,15 +413,6 @@ def _render_candidates(controller: AppController) -> None:
                     controller.set_dimension_filters(dimension, current_selected)
                 st.rerun()
 
-    stats = controller.stats()
-    col1, col2, col3, col4 = st.columns(4)
-    col1.metric("考科數", stats.records)
-    col2.metric("試題附件", stats.question_assets)
-    col3.metric("答案附件", stats.answer_assets)
-    col4.metric("實際傳輸（去重）", stats.unique_urls)
-    st.caption(
-        f"預計歸檔 {stats.total_files} 個檔案（內容相同的附件會共用同一個檔案，實際檔案數可能較少）"
-    )
 
 
 def _reset_candidate_widgets() -> None:
@@ -425,10 +421,19 @@ def _reset_candidate_widgets() -> None:
         st.session_state.pop(f"table-editor-{dimension}", None)
 
 
-def _render_task(controller: AppController, auto_refresh: bool) -> None:
-    st.subheader("下載")
+def _render_task(controller: AppController, auto_refresh: bool, root: str = DEFAULT_ROOT) -> None:
+    if controller.snapshot is not None and controller.state is not None:
+        stats = controller.stats()
+        cols = st.columns(3)
+        for col, label, value in zip(cols, ("已選考科", "試題附件", "答案附件"),
+                                     (stats.records, stats.question_assets, stats.answer_assets)):
+            col.metric(label, value, border=True)
+        st.caption(f"儲存位置：{root}")
+        with st.expander("檔案與傳輸明細"):
+            st.write(f"預計歸檔 {stats.total_files} 個檔案；實際傳輸（去重）{stats.unique_urls} 份。")
+            st.caption("內容相同的附件會共用同一個檔案，實際檔案數可能較少；題型與檔名以下載驗證後為準。")
     disabled = not controller.can_download()
-    if st.button("開始下載", type="primary", disabled=disabled):
+    if st.button("開始下載", type="primary", disabled=disabled, width="stretch"):
         state = controller.start_download()
         if controller.last_error:
             st.error(controller.last_error)
@@ -437,9 +442,9 @@ def _render_task(controller: AppController, auto_refresh: bool) -> None:
             st.rerun()
     if disabled:
         if controller.snapshot is None:
-            st.caption("💡 請先點擊上方的「開始過濾」取得試題清單。")
+            st.caption("💡 請先點擊上方的「查詢試題」取得試題清單。")
         elif not controller.snapshot.is_complete:
-            st.caption("💡 試題清單未完整取得，請重新點擊「開始過濾」。")
+            st.caption("💡 試題清單未完整取得，請重新點擊「查詢試題」。")
         else:
             st.caption("💡 目前未選取任何考科，請在上方勾選欲下載的科目。")
 
@@ -448,11 +453,14 @@ def _render_task(controller: AppController, auto_refresh: bool) -> None:
         return
 
     total = max(1, state.total)
-    st.progress(min(1.0, state.done / total))
-    st.write(
-        f"任務 {state.task_id}｜{state.status.value}｜{state.message}"
-        f"｜第 {state.attempt} 次嘗試"
-    )
+    st.progress(min(1.0, state.done / total), text=f"已處理 {state.done}／{state.total} 份")
+    message = f"{state.status.value}｜{state.message}"
+    if state.failed:
+        st.warning(message)
+    elif state.status is TaskStatus.COMPLETED:
+        st.success(message)
+    else:
+        st.info(message)
     cols = st.columns(3)
     if cols[0].button("取消下載", disabled=not state.status.is_active):
         controller.cancel()
@@ -476,7 +484,8 @@ def _render_task(controller: AppController, auto_refresh: bool) -> None:
         with st.expander(f"不支援的附件（{len(state.unsupported)}）"):
             for asset_id, reason in state.unsupported[:20]:
                 st.text(f"{asset_id}｜{reason}")
-    with st.expander("事件紀錄"):
+    with st.expander("任務詳細資訊與事件紀錄"):
+        st.caption(f"任務 {state.task_id}｜第 {state.attempt} 次嘗試")
         for event in state.events[-30:]:
             st.text(f"{event.at}｜{event.kind}｜{event.message}")
 
@@ -485,21 +494,45 @@ def _render_task(controller: AppController, auto_refresh: bool) -> None:
         st.rerun()
 
 
-def main() -> None:
-    st.set_page_config(page_title="國考刷題神器", layout="wide")
+def _section_heading(number: str, title: str, description: str) -> None:
+    """以固定文案顯示一致的流程標題。"""
     st.markdown(
-        "<style>[data-testid='stDeployButton'] { display: none !important; }</style>",
+        f'<div class="section-heading"><span>{number}</span><div>'
+        f'<h2>{title}</h2><p>{description}</p></div></div>',
         unsafe_allow_html=True,
     )
-    st.title("國考刷題神器")
-    st.caption("考選部考畢試題查詢、篩選與歸檔（本機執行，預設僅監聽 localhost）")
 
+
+def main() -> None:
+    st.set_page_config(page_title="國考刷題神器", page_icon="📚", layout="wide")
+    css = Path(__file__).with_name("styles.css").read_text(encoding="utf-8")
+    st.markdown(f"<style>{css}</style>", unsafe_allow_html=True)
+    st.markdown(
+        '<div class="hero"><div class="eyebrow">歷屆試題 · 你的備考起點</div>'
+        '<h1>國考刷題神器</h1><p>找到歷屆試題，整理成你的題庫。</p>'
+        '<div class="workflow"><span>01 查詢試題</span><b>→</b>'
+        '<span>02 篩選考科</span><b>→</b><span>03 下載歸檔</span></div></div>',
+        unsafe_allow_html=True,
+    )
     page_settings, auto_refresh = _sidebar()
     controller = _ensure_controller(page_settings)
     _render_reconcile(controller)
-    _render_query(controller)
-    _render_candidates(controller)
-    _render_task(controller, auto_refresh)
+    with st.container(key="query-section"):
+        _section_heading("01", "查詢試題", "選擇年度，使用關鍵字縮小搜尋範圍。")
+        _render_query(controller)
+    if controller.snapshot is not None:
+        with st.container(border=True, key="candidate-section"):
+            _section_heading("02", "篩選考科", "從查詢結果挑選這次要收進題庫的考科。")
+            _render_candidates(controller)
+        with st.container(border=True, key="download-section"):
+            _section_heading("03", "下載與歸檔", "確認選取內容，再將試題整理到本機。")
+            _render_task(controller, auto_refresh, page_settings["root"])
+    else:
+        st.markdown(
+            '<div class="empty-state"><strong>你的下一份練習，從這裡開始</strong>'
+            '<p>先查詢試題，再挑選考科；下載時會依左側設定自動歸檔。</p></div>',
+            unsafe_allow_html=True,
+        )
 
 
 if __name__ == "__main__":  # pragma: no cover - 由 streamlit 執行

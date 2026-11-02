@@ -1,0 +1,32 @@
+/* 本機題庫工作台：以原生元件保留鍵盤操作與狀態呈現。 */
+[data-testid="stDeployButton"] { display: none !important; }
+.stMainBlockContainer { max-width: 1280px; padding-top: 2rem; padding-bottom: 3rem; }
+[data-testid="stSidebar"] { border-right: 1px solid #e2e6ef; }
+[data-testid="stSidebar"] > div:first-child { padding-top: 2rem; }
+.hero { padding: 8px 0 28px; }
+.eyebrow { color: #4f46e5; font-size: .8rem; font-weight: 700; letter-spacing: .12em; margin-bottom: 10px; }
+.hero h1 { color: #17213a; font-size: clamp(1.8rem, 3vw, 2.5rem); font-weight: 800; letter-spacing: -.04em; padding: 0; }
+.hero > p { color: #64748b; margin: 10px 0 22px; }
+.workflow { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; font-size: .8rem; color: #475569; }
+.workflow span { background: #eef0ff; border: 1px solid #e0e3ff; border-radius: 8px; padding: 7px 12px; }
+.workflow b { color: #94a3b8; font-weight: 400; }
+.section-heading { display: flex; gap: 12px; align-items: flex-start; padding: 4px 0 14px; }
+.section-heading > span { display: grid; place-items: center; flex-shrink: 0; width: 34px; height: 34px; border-radius: 10px; background: #eef0ff; color: #4f46e5; font-size: .8rem; font-weight: 700; }
+.section-heading h2 { font-size: 1.15rem; font-weight: 700; padding: 0; line-height: 1.5; }
+.section-heading p { color: #64748b; font-size: .85rem; margin: 4px 0 0; }
+[data-testid="stForm"], .st-key-candidate-section, .st-key-download-section { background: #fff; border: 1px solid #e2e6ef; border-radius: 14px; padding: 24px; }
+.st-key-candidate-section, .st-key-download-section { margin-top: 12px; }
+[data-testid="stMetric"] { background: #f8f9fd; border-color: #e2e6ef; border-radius: 12px; padding: 16px; }
+[data-testid="stMetricValue"] { color: #312e81; font-weight: 700; }
+.stButton button, .stFormSubmitButton button { border-radius: 9px; min-height: 42px; font-weight: 600; }
+button[kind="primary"] { box-shadow: 0 3px 8px #4f46e51a; }
+[data-testid="stDataFrame"] { border-radius: 10px; overflow: hidden; }
+.empty-state { padding: 32px 20px; text-align: center; border: 1px dashed #cbd5e1; border-radius: 14px; margin-top: 16px; color: #475569; }
+.empty-state strong { font-size: 1rem; color: #334155; }
+.empty-state p { font-size: .85rem; margin: 8px 0 0; color: #64748b; }
+@media (max-width: 760px) {
+  .stMainBlockContainer { padding: 1rem; }
+  [data-testid="stForm"], .st-key-candidate-section, .st-key-download-section { padding: 16px; }
+  .workflow { gap: 6px; }
+  .workflow span { padding: 6px 8px; }
+}

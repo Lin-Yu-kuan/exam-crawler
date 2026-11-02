@@ -68,14 +68,14 @@ def test_candidate_ui_uses_300px_table_and_full_fetch() -> None:
 
 
 def test_query_form_wording_matches_user_feedback() -> None:
-    """便條紙 #1–#4：說明文字移除、兩個選項白話化、按鈕改「開始過濾」。"""
+    """便條紙 #1–#4：說明文字移除、兩個選項白話化、按鈕改「查詢試題」。"""
     source = (ROOT / "app" / "ui" / "web_app.py").read_text(encoding="utf-8")
 
     assert "關鍵字會先送官方進階查詢" not in source, "#1 整段說明要拿掉"
     assert "重新向官網下載（忽略今日快取）" in source, "#3 要白話"
     assert "強制重新查詢" not in source
-    assert 'st.form_submit_button("開始過濾"' in source, "#4 按鈕改「開始過濾」"
-    assert "尚未取得資料。按「開始過濾」" in source
+    assert 'st.form_submit_button("查詢試題"' in source, "#4 按鈕改「查詢試題」"
+    assert "尚未取得資料。按「查詢試題」" in source
     # 兩個勾選項都要有說明
     assert source.count("help=(") >= 2
 
