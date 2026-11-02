@@ -4,6 +4,7 @@ import pathlib
 import subprocess
 import sys
 import zipfile
+import pytest
 from app.ui import web_app
 
 def test_zip_creation_with_utf8_and_dirs(tmp_path: pathlib.Path) -> None:
@@ -16,7 +17,8 @@ def test_zip_creation_with_utf8_and_dirs(tmp_path: pathlib.Path) -> None:
     pdf_zero = subj_dir / "空檔案.pdf"
     pdf_zero.write_bytes(b"")
 
-    data = web_app._create_zip_from_root(str(tmp_path))
+    data, count = web_app._create_zip_from_paths(str(tmp_path), (pdf1.relative_to(tmp_path).as_posix(),))
+    assert count == 1
     assert data is not None
     assert len(data) > 22
 
@@ -48,7 +50,8 @@ def test_zip_creation_shortens_ultra_long_path(tmp_path: pathlib.Path) -> None:
     long_file = long_dir / f"113_{long_exam}_專技高考_資訊技師_試題.pdf"
     long_file.write_bytes(b"%PDF-1.4 long path test")
 
-    data = web_app._create_zip_from_root(str(tmp_path))
+    data, count = web_app._create_zip_from_paths(str(tmp_path), (long_file.relative_to(tmp_path).as_posix(),))
+    assert count == 1
     assert data is not None
 
     with zipfile.ZipFile(io.BytesIO(data)) as zf:
@@ -76,3 +79,30 @@ def test_button_label_depends_on_cloud(monkeypatch) -> None:
     monkeypatch.setenv("STREAMLIT_SHARING_HOST", "share.streamlit.io")
     assert web_app.is_cloud_env() is True
     monkeypatch.delenv("STREAMLIT_SHARING_HOST", raising=False)
+
+
+def test_zip_only_includes_task_files_and_deduplicates(tmp_path):
+    (tmp_path / "歷史.pdf").write_bytes(b"old")
+    (tmp_path / "本次.pdf").write_bytes(b"current")
+    data, count = web_app._create_zip_from_paths(str(tmp_path), ("本次.pdf", "./本次.pdf"))
+    assert count == 1
+    with zipfile.ZipFile(io.BytesIO(data)) as zf:
+        assert zf.namelist() == ["本次.pdf"]
+        assert zf.read("本次.pdf") == b"current"
+
+
+@pytest.mark.parametrize("bad_path", ["不存在.pdf", "空.pdf", "../外部.pdf", "_系統資料/內部.pdf"])
+def test_invalid_export_stops_entire_archive(tmp_path, bad_path):
+    (tmp_path / "有效.pdf").write_bytes(b"valid")
+    (tmp_path / "空.pdf").touch()
+    with pytest.raises(ValueError):
+        web_app._create_zip_from_paths(str(tmp_path), ("有效.pdf", bad_path))
+
+
+def test_absolute_path_rejected(tmp_path):
+    with pytest.raises(ValueError, match="超出"):
+        web_app._create_zip_from_paths(str(tmp_path), (str(tmp_path / "absolute.pdf"),))
+
+
+def test_empty_export(tmp_path):
+    assert web_app._create_zip_from_paths(str(tmp_path), ()) == (None, 0)

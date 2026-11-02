@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Callable, Protocol
+from app.engine.downloader import DownloadResult
 
 from app.engine.filter import (
     apply_faceted_selection,
@@ -42,7 +43,7 @@ DIMENSION_LABELS = {"exams": "考試", "categories": "類科", "subjects": "科�
 
 #: 控制器對外介面版本；UI 以此判斷 session 內的實例是否過期（熱重載後必須重建）。
 #: 只要新增／修改 AppController 的公開方法就必須 +1。
-CONTROLLER_API_VERSION = 3
+CONTROLLER_API_VERSION = 4
 
 
 class QueryServiceProtocol(Protocol):
@@ -58,6 +59,9 @@ class QueryServiceProtocol(Protocol):
 
 
 class TaskServiceProtocol(Protocol):
+    def export_results(self, task_id: str) -> tuple[DownloadResult, ...]:
+        ...
+
     def submit(  # pragma: no cover - 介面
         self, snapshot: QuerySnapshot, frozen
     ) -> TaskState:
@@ -446,6 +450,15 @@ class AppController:
             return self._task_service.get(self.task_id)
         except Exception:  # 任務可能屬於先前的程序，視為不存在
             return None
+
+    def export_paths(self) -> tuple[str, ...]:
+        """依任務成果匯出，不使用目前畫面上的篩選條件。"""
+        if self.task_id is None:
+            return ()
+        results = self._task_service.export_results(self.task_id)
+        if any(not result.relative_path for result in results):
+            raise TaskServiceError("任務成果缺少檔案路徑，無法匯出")
+        return tuple(sorted({result.relative_path for result in results if result.relative_path}))
 
     def cancel(self) -> TaskState | None:
         if self.task_id is None:

@@ -162,6 +162,7 @@ class _Task:
     failures: list[tuple[str, str, str]] = field(default_factory=list)
     reserved: dict[str, str] = field(default_factory=dict)
     asset_roles: dict[str, AssetRole] = field(default_factory=dict)
+    successful_results: dict[str, DownloadResult] = field(default_factory=dict)
 
     @property
     def pending(self) -> int:
@@ -329,6 +330,14 @@ class TaskService:
         with self._lock:
             return tuple(task.state() for task in self._tasks.values())
 
+    def export_results(self, task_id: str) -> tuple[DownloadResult, ...]:
+        """取得本任務累積成功結果；重試不清除先前成果。"""
+        with self._lock:
+            task = self._task(task_id)
+            if task.status.is_active:
+                raise TaskStateError("任務仍在執行中，請完成後再匯出")
+            return tuple(task.successful_results[key] for key in sorted(task.successful_results))
+
     def wait(self, task_id: str, timeout: float = 10.0) -> TaskState:
         """測試與 CLI 用：等待任務結束。"""
         thread = self._threads.get(task_id)
@@ -492,6 +501,8 @@ class TaskService:
 
     def _record_result(self, task: _Task, result: DownloadResult) -> None:
         with self._lock:
+            if result.is_success:
+                task.successful_results[result.asset_id] = result
             if result.skipped or result.status is AttachmentStatus.SKIPPED:
                 task.skipped += 1
             elif result.status is AttachmentStatus.COMPLETED:

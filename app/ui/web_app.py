@@ -28,7 +28,7 @@ from app.crawler.rate_limiter import RateLimitConfig, RateLimiter
 from app.engine.downloader import Downloader
 from app.engine.path_builder import DEFAULT_TEMPLATES, PathMode
 from app.engine.query_service import QueryService
-from app.engine.task_service import DEFAULT_WORKERS, MAX_WORKERS, MIN_WORKERS, TaskService
+from app.engine.task_service import DEFAULT_WORKERS, MAX_WORKERS, MIN_WORKERS, TaskService, TaskServiceError
 from app.models import ParseStatus, QuerySpec, TaskStatus
 from app.storage.manifest import ManifestStore
 from app.ui.controller import CONTROLLER_API_VERSION, DIMENSION_LABELS, DIMENSIONS, AppController
@@ -164,7 +164,7 @@ def build_controller(
     )
 
 
-EXPECTED_CONTROLLER_API_VERSION = 3
+EXPECTED_CONTROLLER_API_VERSION = 4
 
 
 def _reload_submodules_if_needed() -> None:
@@ -632,20 +632,23 @@ def _render_task(controller: AppController, auto_refresh: bool, root: str = DEFA
 
     # 任務完成或部分完成時，提供整包打包下載（雲端必備，本機亦可方便打包）
     actual_root = str(controller._root) if hasattr(controller, "_root") else root
-    if state.status in (TaskStatus.COMPLETED, TaskStatus.PARTIAL) and (state.completed > 0 or state.skipped > 0):
-        zip_bytes = _create_zip_from_root(actual_root)
+    if state.status in (TaskStatus.COMPLETED, TaskStatus.PARTIAL):
+        try:
+            zip_bytes, file_count = _create_zip_from_paths(actual_root, controller.export_paths())
+        except (OSError, ValueError, TaskServiceError) as exc:
+            st.error(f"無法匯出本次任務題庫包：{exc}")
+            zip_bytes, file_count = None, 0
         if zip_bytes:
+            st.caption(f"本次任務打包 {file_count} 個檔案；包含已存在及共用的檔案。")
             st.download_button(
-                label="📦 下載已分類好的題庫包 (ZIP 壓縮檔)",
+                label="📦 下載本次任務題庫包 (ZIP 壓縮檔)",
                 data=zip_bytes,
-                file_name=f"國考題庫_{time.strftime('%Y%m%d_%H%M%S')}.zip",
+                file_name=f"國考題庫_{state.task_id}_{time.strftime('%Y%m%d_%H%M%S')}.zip",
                 mime="application/zip",
                 type="primary",
                 width="stretch",
-                key="download-zip-btn",
+                key=f"download-zip-{state.task_id}-{state.attempt}",
             )
-        elif is_cloud_env():
-            st.warning("⚠️ 題庫檔案正在整理中，若未出現下載按鈕請稍候片刻或按重試。")
 
     if state.failures:
         # 建立 asset_id -> (record, asset) 快速查找表
@@ -746,25 +749,34 @@ def _sanitize_zip_rel_path(rel_path: str, max_bytes: int = 180) -> str:
     return res
 
 
-def _create_zip_from_root(root: str) -> bytes | None:
-    """將題庫目錄下所有已歸檔的 PDF 檔案打包成符合跨平台（Windows/Mac/Linux）UTF-8 規範之 ZIP。"""
+def _create_zip_from_paths(root: str, relative_paths: tuple[str, ...]) -> tuple[bytes | None, int]:
+    """只打包明確指定的任務成果；任何無效路徑都停止整包匯出。"""
     root_path = Path(root).resolve()
-    if not root_path.exists():
-        return None
-    pdf_files = [
-        p for p in root_path.rglob("*.pdf")
-        if SYSTEM_DIR_NAME not in p.parts and ".parts" not in p.parts and p.is_file() and p.stat().st_size > 0
-    ]
+    pdf_files: set[Path] = set()
+    for relative in relative_paths:
+        rel = Path(relative)
+        p = (root_path / rel).resolve()
+        if rel.is_absolute() or not p.is_relative_to(root_path):
+            raise ValueError(f"檔案路徑超出下載根目錄：{relative}")
+        if SYSTEM_DIR_NAME in rel.parts or ".parts" in rel.parts or p.suffix.lower() != ".pdf":
+            raise ValueError(f"不是可匯出的題庫 PDF：{relative}")
+        if not p.is_file() or p.stat().st_size == 0:
+            raise ValueError(f"檔案遺失或為空，請重新下載：{relative}")
+        pdf_files.add(p)
     if not pdf_files:
-        return None
+        return None, 0
 
     buf = io.BytesIO()
     created_dirs: set[str] = set()
+    archive_names: set[str] = set()
 
     with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
         for p in sorted(pdf_files):
             raw_rel_path = p.relative_to(root_path).as_posix()
             rel_path = _sanitize_zip_rel_path(raw_rel_path, max_bytes=180)
+            if rel_path.casefold() in archive_names:
+                raise ValueError(f"ZIP 檔名縮短後衝突：{raw_rel_path}")
+            archive_names.add(rel_path.casefold())
             file_bytes = p.read_bytes()
             mtime = time.localtime(p.stat().st_mtime)[:6]
 
@@ -791,7 +803,7 @@ def _create_zip_from_root(root: str) -> bytes | None:
             zf.writestr(zinfo, file_bytes)
 
     data = buf.getvalue()
-    return data if len(data) > 22 else None
+    return data, len(pdf_files)
 
 def _section_heading(number: str, title: str, description: str) -> None:
     """以固定文案顯示一致的流程標題。"""

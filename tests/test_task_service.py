@@ -309,6 +309,9 @@ def test_retry_only_processes_failed_assets(tmp_path, store, records) -> None:
     state = service.submit(snapshot, frozen)
     first = service.wait(state.task_id)
     assert first.status is TaskStatus.PARTIAL
+    first_exports = service.export_results(state.task_id)
+    assert first_exports
+    assert answer_id not in {result.asset_id for result in first_exports}
 
     downloader.failures.clear()
     downloader.calls.clear()
@@ -319,6 +322,37 @@ def test_retry_only_processes_failed_assets(tmp_path, store, records) -> None:
     assert final.completed == 1
     assert downloader.calls == [answer_id]
     assert final.attempt == 2
+    exports = service.export_results(state.task_id)
+    assert {result.asset_id for result in exports} == {result.asset_id for result in first_exports} | {answer_id}
+    assert all(result.relative_path for result in exports)
+
+
+def test_export_is_scoped_to_submitted_selection(tmp_path, store, records):
+    snapshot = make_snapshot(records)
+    ids = iter(("task-a", "task-b"))
+    downloader = FakeDownloader(store=store)
+    service = make_service(tmp_path, store, downloader, task_id_factory=lambda: next(ids))
+    for selected in (records[:1], records[1:2]):
+        task = service.submit(snapshot, freeze_selection(selected, snapshot_id=snapshot.snapshot_id))
+        service.wait(task.task_id)
+        assert {r.asset_id for r in service.export_results(task.task_id)} == {
+            a.asset_id for record in selected for a in record.assets
+        }
+
+
+@pytest.mark.parametrize("status,shared", [(AttachmentStatus.SKIPPED, None), (AttachmentStatus.COMPLETED, "old-asset")])
+def test_export_keeps_existing_and_shared_results(tmp_path, store, records, status, shared):
+    class ExistingDownloader:
+        def download(self, target, **kwargs):
+            return DownloadResult(target.asset.asset_id, status, relative_path="既有/共用.pdf", dedupe_of=shared)
+
+    snapshot = make_snapshot(records)
+    service = make_service(tmp_path, store, ExistingDownloader())
+    task = service.submit(snapshot, freeze_selection(records[:1], snapshot_id=snapshot.snapshot_id))
+    service.wait(task.task_id)
+    results = service.export_results(task.task_id)
+    assert results
+    assert all(r.relative_path == "既有/共用.pdf" for r in results)
 
 
 def test_retry_rejected_while_running(tmp_path, store, records) -> None:

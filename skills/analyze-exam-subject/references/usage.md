@@ -41,7 +41,7 @@ python scripts/exam_files.py extract --inventory "D:/題庫/_analysis/盤點/inv
 
 ## 精簡分析
 
-先完成 selection 與 render。`prepare` 會檢查每個已選來源都有 render 索引、至少一頁可用；缺頁只會產生 warning 與 `missing_pages`，不會靜默假裝完整。`--no-cache` 可強制重跑，`--prior` 則重用完整快取。
+先完成 selection 與 render，再依 [精簡考點分析](compact-analysis.md) 跨來源抽樣建立分類表、設定分類版本，才執行 prepare。`prepare` 會檢查每個已選來源都有 render 索引、至少一頁可用；缺頁只會產生 warning 與 `missing_pages`，不會靜默假裝完整。`--no-cache` 可強制重跑，`--prior` 則重用完整快取。
 
 ```shell
 python scripts/compact_analysis.py prepare --inventory inventory.json --selection selection.json --render-index render-index.json --topics topics.json --output work.json
@@ -51,9 +51,9 @@ python scripts/compact_analysis.py merge --work work.json --results result-001.j
 python scripts/compact_analysis.py summary --index question-index.json --target "高考" --output summary.json
 ```
 
-`merge --visual-review` 會核對 `source_sha256`、頁碼與圖片雜湊；沒有 visual-review 或 `host_vision.available` 不是 true 時，只會得到 partial 的文字暫判，所有題目維持 not_checked。`merge --extraction` 會把文字擷取狀態帶進 `text_extracted_pages`，並在題目所有頁都沒有文字時標 `vision_only`。`merge --fast-verify` 可用 `prepare` 記錄的 mtime／size 跳過未變更檔案的雜湊，預設仍是完整重算；變更的檔案會重新計算並拒絕沿用。`packet --context 1` 會把同卷前後各一頁放進 `context_pages`，供跨頁題續讀，不重複計算。`--results` 可接受多個檔案；全部命中快取時可省略。`--require-complete` 會在結果仍為 partial 時失敗，適合正式交付前檢查。`summary --target` 只改變統計目標，不會重跑 AI；改目標考試或來源年度也不再使分析快取失效。
+批次回覆、merge 選項、目標考試切換與 AI 快取條件統一見 [精簡考點分析](compact-analysis.md)；視覺完成判定見 [視覺檢查](visual-review.md)。`question-index` 使用 schema 3，`summary` 使用 schema 2，欄位見 [資料契約](output-contract.md)。
 
-`work.json` 的 `config_hash` 只涵蓋分析設定（備考科目、分類表、分類版本、protocol）；來源 cache_key 另含 PDF／圖片雜湊與來源角色。`target_exam`、年度、考試名稱等只影響報告統計，不影響分類快取。`question-index` 使用 schema 3，`summary` 使用 schema 2；`source_status` 為每個路徑的狀態列表。
+文字擷取恢復只重用完整擷取，且來源內容雜湊、工具版本、pypdf 版本與頁碼範圍皆一致的結果；不符合時重新擷取。渲染恢復與圖片快取條件統一見視覺檢查文件。
 
 ## Manifest 邊界
 

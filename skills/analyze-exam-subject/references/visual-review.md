@@ -19,11 +19,17 @@ python scripts/exam_files.py render --inventory "D:/題庫/_analysis/盤點/inve
 
 ## 宿主能力與逐頁檢查
 
+`host_vision` 記錄本次實際開圖的能力結果（available／unavailable／unknown）、工具與成功或失敗原因；模型名稱或能生成圖片不代表已驗證讀圖能力。欄位格式見 [資料契約](output-contract.md)。
+
 1. 檢查宿主實際提供的圖片讀取能力，開啟第一張成功渲染的實際頁面。沒有工具、工具失敗或沒有看到圖片時，不宣稱支援視覺；把結果寫進 visual-review 的 `host_vision`。
 2. 若可用，逐頁對照文字與圖片，包括非空文字頁。記錄題號、選項、公式、圖形關係與跨頁延續；圖片清楚但沒有題目也要明確記錄。完成後用 `merge --visual-review`，不要只讓模型宣稱 reviewed。
 3. 若不可用，保存所有生成圖片與待檢視頁碼；文字分析只標暫定，不能將依賴圖形的題目標完成。`host_vision.available=false` 時 reviewed_pages 必須留空，merge 會把整體維持 partial。不把缺圖題當成不相關而排除。
 4. 清晰度不足時重繪；仍不清晰標 unreadable，附原因。模型能接收圖片不等於能可靠判讀每道手寫或複雜圖表題。
 5. 不將整個題庫一次送入上下文；每頁保存觀察與引用。跨頁題若續頁落在另一個批次，必須在讀完續頁的那一批重新輸出完整題目；merge 不會只因 `reviewed_pages` 的聯集就標 checked。
+
+圖表、公式、程式碼或文字缺損時核對原頁，細節不足則用 300 DPI 重繪；仍不清楚時標記不可判讀，不猜線路、符號或手寫內容。跨頁題讀完全部相關頁，不只看題號所在頁；批次回覆方法見 [精簡考點分析](compact-analysis.md)。
+
+render-index 只記錄圖片生成，`visual_status` 始終為 not_checked。宿主另存 visual-review，merge 核對來源與實際圖片雜湊後才標 checked。未提供 visual-review 或 `host_vision.available` 不是 true 時，所有題目保持 not_checked、整體 partial；unreadable 也使整體維持 partial。舊索引缺少視覺欄位時同樣視為 not_checked。無視覺時依賴圖形的題目列 needs_review。
 
 ## 覆蓋率
 

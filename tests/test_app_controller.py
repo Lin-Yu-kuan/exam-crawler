@@ -160,6 +160,26 @@ def test_query_initialises_all_candidates(html_dir) -> None:
     assert controller.stats().records == 371
 
 
+def test_export_uses_task_results_after_selection_changes(html_dir, monkeypatch):
+    from app.engine.downloader import DownloadResult
+    from app.models import AttachmentStatus
+
+    controller, _, tasks = make_controller(html_dir)
+    controller.query(QuerySpec(113, 113))
+    controller.start_download()
+    task_id = controller.task_id
+    seen = []
+
+    def export_results(requested_id):
+        seen.append(requested_id)
+        return (DownloadResult("asset", AttachmentStatus.COMPLETED, relative_path="原任務.pdf"),)
+
+    monkeypatch.setattr(tasks, "export_results", export_results, raising=False)
+    controller.set_selection("subjects", ())
+    assert controller.export_paths() == ("原任務.pdf",)
+    assert seen == [task_id]
+
+
 def test_query_error_keeps_previous_state(html_dir) -> None:
     controller, query, _ = make_controller(html_dir)
     controller.query(QuerySpec(113, 113))
