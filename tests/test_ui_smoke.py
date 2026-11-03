@@ -17,7 +17,7 @@ def test_web_app_exposes_main_and_controller_builder() -> None:
 
     assert callable(web_app.main)
     assert callable(web_app.build_controller)
-    assert web_app.DEFAULT_ROOT == r"C:\國考題庫"
+    assert web_app.DEFAULT_ROOT == web_app.DEFAULT_LOCAL_ROOT
 
 
 def test_web_app_has_no_import_time_side_effects() -> None:
