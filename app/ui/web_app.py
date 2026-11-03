@@ -128,7 +128,6 @@ MODE_LABELS = {
     "A（依科目）": PathMode.A,
     "B（依年度考試）": PathMode.B,
     "C（平鋪）": PathMode.C,
-    "D（自訂模板）": PathMode.D,
 }
 
 
@@ -189,6 +188,19 @@ def _require_compatible_runtime(controller=None) -> None:
         st.stop()
 
 
+SAMPLE_VARS = {
+    "年度": "113",
+    "年度標籤": "113年",
+    "考試名稱": "高考三級考試",
+    "考試簡稱": "高考三級",
+    "類科": "資訊處理",
+    "科目": "資料結構",
+    "等別": "三等",
+    "題型類別": "申論題",
+    "題型": "申論試題",
+}
+
+
 def _ensure_controller(settings: dict) -> AppController:
     """相容 session 沿用實例；不相容時要求重啟，不替換背景服務。"""
     cached = st.session_state.get("controller")
@@ -203,9 +215,13 @@ def _ensure_controller(settings: dict) -> AppController:
     if cached is None or st.session_state.get("settings") != key:
         new_ctrl = build_controller(**settings)
         _require_compatible_runtime(new_ctrl)
+        if cached is not None:
+            new_ctrl.snapshot = cached.snapshot
+            new_ctrl.state = cached.state
+            new_ctrl.active_filters = cached.active_filters
+            new_ctrl.quick_text = cached.quick_text
         st.session_state["controller"] = new_ctrl
         st.session_state["settings"] = key
-        _reset_candidate_widgets()
     return st.session_state["controller"]
 
 
@@ -251,58 +267,10 @@ def _sidebar() -> tuple[dict, bool]:
             st.caption("下載紀錄由程式自動保存，搬移題庫時請連同整個資料夾一起搬移。")
         mode_label = st.selectbox("歸檔模式", list(MODE_LABELS))
         mode = MODE_LABELS[mode_label]
-        template = ""
-
-        if mode is PathMode.D:
-            with st.container(border=True):
-                st.markdown("##### 📁 自訂目錄結構")
-                depth = st.radio(
-                    "目錄層次",
-                    ["雙層資料夾", "單層資料夾", "平鋪（無資料夾）"],
-                    horizontal=True,
-                    key="custom-depth",
-                )
-
-                folder_options = {
-                    "年度 (例: 113)": "{年度}",
-                    "科目 (例: 資料結構)": "{科目}",
-                    "考試名稱 (例: 高考三級)": "{考試簡稱}",
-                    "類科 (例: 資訊處理)": "{類科}",
-                }
-                subfolder_options = {
-                    "考試＋類科 (例: 高考三級_資訊處理)": "{考試簡稱}_{類科}",
-                    "類科 (例: 資訊處理)": "{類科}",
-                    "科目 (例: 資料結構)": "{科目}",
-                    "年度 (例: 113)": "{年度}",
-                }
-
-                folders = []
-                if depth in ("雙層資料夾", "單層資料夾"):
-                    c1 = st.selectbox("第一層分類", list(folder_options.keys()), index=0, key="c-l1")
-                    folders.append(folder_options[c1])
-
-                if depth == "雙層資料夾":
-                    c2 = st.selectbox("第二層分類", list(subfolder_options.keys()), index=0, key="c-l2")
-                    folders.append(subfolder_options[c2])
-
-                fn_items = st.multiselect(
-                    "檔名包含欄位（依順序串接）",
-                    ["年度", "考試簡稱", "類科", "科目"],
-                    default=["科目"],
-                    key="c-fn",
-                )
-                fn_tokens = [f"{{{item}}}" for item in (fn_items or [])]
-                fn_prefix = "_".join(fn_tokens)
-                filename = f"{fn_prefix}_{{題型}}.pdf" if fn_prefix else "{題型}.pdf"
-                template = "/".join(folders + [filename])
-
-                st.caption("歸檔結構預覽")
-                st.code(build_tree_preview(root, template), language="text")
-        else:
-            with st.container(border=True):
-                template = DEFAULT_TEMPLATES[mode.name]
-                st.caption("歸檔結構預覽")
-                st.code(build_tree_preview(root, template), language="text")
+        template = DEFAULT_TEMPLATES[mode.name]
+        with st.container(border=True):
+            st.caption("歸檔結構預覽")
+            st.code(build_tree_preview(root, template), language="text")
 
         db_path = str(resolve_manifest_path(root))
         with st.expander("進階設定"):
@@ -315,7 +283,7 @@ def _sidebar() -> tuple[dict, bool]:
             db_path=db_path,
             workers=workers,
             mode=mode,
-            template=template if mode is PathMode.D else None,
+            template=None,
         ),
         auto_refresh,
     )

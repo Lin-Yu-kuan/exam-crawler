@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import shutil
 import time
 from contextlib import nullcontext
 from dataclasses import dataclass
@@ -187,14 +188,44 @@ class Downloader:
             AttachmentStatus.SKIPPED,
         ):
             if self._is_intact(existing):
+                old_file = self._root.joinpath(*existing.path.split("/"))
+                inspection = self._inspector(old_file) if target.resolve_path is not None else None
+                desired_relative = (
+                    target.resolve_path(inspection)
+                    if target.resolve_path is not None and inspection is not None
+                    else target.relative_path
+                )
+                if desired_relative == existing.path:
+                    return DownloadResult(
+                        asset_id=asset.asset_id,
+                        status=AttachmentStatus.SKIPPED,
+                        relative_path=existing.path,
+                        size_bytes=existing.size or 0,
+                        sha256=existing.sha256,
+                        version=existing.version,
+                        skipped=True,
+                    )
+                new_file = self._root.joinpath(*desired_relative.split("/"))
+                ensure_within_root(self._root, new_file)
+                new_file.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(old_file, new_file)
+                self._store.complete_attachment(
+                    asset_id=asset.asset_id,
+                    path=desired_relative,
+                    sha256=existing.sha256,
+                    size=existing.size or 0,
+                    version=existing.version,
+                    question_type=existing.question_type
+                    or (inspection.evidence.question_type.value if inspection else None),
+                )
                 return DownloadResult(
                     asset_id=asset.asset_id,
-                    status=AttachmentStatus.SKIPPED,
-                    relative_path=existing.path,
+                    status=AttachmentStatus.COMPLETED,
+                    relative_path=desired_relative,
                     size_bytes=existing.size or 0,
                     sha256=existing.sha256,
                     version=existing.version,
-                    skipped=True,
+                    skipped=False,
                 )
 
         if should_cancel is not None and should_cancel():
