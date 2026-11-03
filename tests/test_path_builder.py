@@ -5,11 +5,13 @@ from __future__ import annotations
 import pathlib
 import subprocess
 import unicodedata
+from dataclasses import replace
 
 import pytest
 
 from app.crawler.parser import parse_result_page
 from app.engine.path_builder import (
+    DEFAULT_MAX_SEGMENT_BYTES,
     DEFAULT_TEMPLATES,
     MISSING_LEVEL,
     PathBuildError,
@@ -334,6 +336,35 @@ def test_segment_length_limit_applies(tmp_path) -> None:
 
     for segment in plan.files[0].relative_path.split("/"):
         assert len(segment) <= 40
+
+
+def test_segment_byte_limit_applies_to_cjk(tmp_path) -> None:
+    record = make_record("r1", subject="長" * 200)
+    plan = plan_for(tmp_path, record, mode=PathMode.C)
+
+    for segment in plan.files[0].relative_path.split("/"):
+        assert len(segment.encode("utf-8")) <= DEFAULT_MAX_SEGMENT_BYTES
+
+
+def test_100_char_cjk_segment_is_byte_shortened() -> None:
+    cleaned = sanitize_segment("年" * 100)
+
+    assert len(cleaned) <= 100
+    assert len(cleaned.encode("utf-8")) <= DEFAULT_MAX_SEGMENT_BYTES
+
+
+def test_long_exam_name_directory_stays_under_byte_limit(tmp_path) -> None:
+    long_name = (
+        "115年公務人員特種考試警察人員考試、"
+        "115年公務人員特種考試一般警察人員考試、"
+        "115年公務人員特種考試國家安全局國家安全情報人員考試、"
+        "115年公務人員特種考試移民行政人員考試"
+    )
+    record = replace(make_record("r1"), exam_name=long_name, exam_name_key=long_name)
+    plan = plan_for(tmp_path, record, mode=PathMode.B)
+
+    for segment in plan.files[0].relative_path.split("/"):
+        assert len(segment.encode("utf-8")) <= DEFAULT_MAX_SEGMENT_BYTES
 
 
 # --- 根目錄邊界 --------------------------------------------------------

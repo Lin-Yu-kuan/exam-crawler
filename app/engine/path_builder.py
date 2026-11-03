@@ -55,6 +55,7 @@ CONTROL_CATEGORY = "C"
 WHITESPACE = re.compile(r"\s+")
 
 DEFAULT_MAX_SEGMENT_LENGTH = 100
+DEFAULT_MAX_SEGMENT_BYTES = 200
 DEFAULT_MAX_TOTAL_LENGTH = 240
 
 
@@ -147,10 +148,35 @@ def _strip_control(text: str) -> str:
     return "".join(ch for ch in text if unicodedata.category(ch)[0] != CONTROL_CATEGORY)
 
 
+def _truncate_body(body: str, keep_chars: int, keep_bytes: int) -> str:
+    """依字元數與 UTF-8 位元組數截斷主體，保留開頭且不切斷多位元組字元。"""
+    if keep_chars <= 0 or keep_bytes <= 0:
+        return ""
+    kept: list[str] = []
+    used_bytes = 0
+    for index, char in enumerate(body):
+        if index >= keep_chars:
+            break
+        size = len(char.encode("utf-8"))
+        if used_bytes + size > keep_bytes:
+            break
+        kept.append(char)
+        used_bytes += size
+    return "".join(kept)
+
+
 def sanitize_segment(
-    value: str, *, max_length: int = DEFAULT_MAX_SEGMENT_LENGTH, context: str = ""
+    value: str,
+    *,
+    max_length: int = DEFAULT_MAX_SEGMENT_LENGTH,
+    max_bytes: int = DEFAULT_MAX_SEGMENT_BYTES,
+    context: str = "",
 ) -> str:
-    """清理單一路徑段：NFKC、去控制字元、換掉非法字元、處理保留名稱。"""
+    """清理單一路徑段：NFKC、去控制字元、換掉非法字元、處理保留名稱。
+
+    除字元數上限外，另以 UTF-8 位元組數截斷：中文字每字 3 位元組，
+    純字元截斷仍可能超過檔案系統 255 位元組的段上限（ENAMETOOLONG）。
+    """
     text = unicodedata.normalize("NFKC", value or "")
     text = _strip_control(text)
     text = "".join("_" if ch in ILLEGAL_CHARACTERS else ch for ch in text)
@@ -164,12 +190,17 @@ def sanitize_segment(
     if stem in RESERVED_NAMES:
         text = f"_{text}"
 
-    if len(text) > max_length:
+    if len(text) > max_length or len(text.encode("utf-8")) > max_bytes:
         token = _hash_token(value)
         suffix = ".pdf" if text.lower().endswith(".pdf") else ""
         body = text[: len(text) - len(suffix)] if suffix else text
-        keep = max(1, max_length - len(token) - 1 - len(suffix))
-        text = f"{body[:keep]}_{token}{suffix}"
+        keep_chars = max(1, max_length - len(token) - 1 - len(suffix))
+        keep_bytes = max_bytes - len(token.encode("utf-8")) - 1 - len(suffix.encode("utf-8"))
+        if keep_bytes < 1:
+            raise PathBuildError(
+                f"名稱過長且位元組上限過小，無法安全縮短：{context or value!r}"
+            )
+        text = f"{_truncate_body(body, keep_chars, keep_bytes)}_{token}{suffix}"
 
     if not text:
         raise PathBuildError(f"清理後名稱為空：{context or value!r}")
