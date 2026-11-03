@@ -115,3 +115,64 @@ def test_none_button_sets_zero_selection_and_disables_download() -> None:
     ctrl = app.session_state["ctrl"]
     assert ctrl.active_filters["subjects"] == set()
     assert ctrl.can_download() is False
+
+def test_history_selector_does_not_revert_modified_form_inputs() -> None:
+    history_script = '''
+import streamlit as st
+from app.models import QuerySpec
+from app.ui import web_app
+
+class _DummyStore:
+    def list_recent_specs(self, limit=10):
+        return (
+            QuerySpec(112, 112, exam_name_keyword="高考", category_keyword="資訊", subject_keyword="資料結構"),
+        )
+
+class _DummyController:
+    last_error = None
+    snapshot = None
+
+    def __init__(self):
+        self._store = _DummyStore()
+        self.submitted_spec = None
+
+    def recent_query_specs(self, limit=10):
+        return self._store.list_recent_specs(limit=limit)
+
+    def query(self, spec, force=False):
+        self.submitted_spec = spec
+
+if "ctrl" not in st.session_state:
+    st.session_state["ctrl"] = _DummyController()
+
+controller = st.session_state["ctrl"]
+web_app._render_query(controller)
+'''
+    app = AppTest.from_string(history_script, default_timeout=30)
+    app.run()
+    assert not app.exception
+
+    # 1. 預設狀態
+    assert app.selectbox[0].key == "history-selector-0"
+    assert app.text_input(key="q_subject").value == ""
+
+    # 2. 選擇歷史紀錄
+    app.selectbox[0].select("112年｜考試：高考、類科：資訊、科目：資料結構").run()
+    assert not app.exception
+
+    # 驗證歷史值已帶入，且選單 key 遞增並自動歸位回到提示「（點選歷史條件自動帶入…）」
+    assert app.text_input(key="q_subject").value == "資料結構"
+    assert app.selectbox[0].key == "history-selector-1"
+    assert app.selectbox[0].value == "（點選歷史條件自動帶入…）"
+
+    # 3. 使用者手動修改科目關鍵字為「演算法」並送出查詢
+    app.text_input(key="q_subject").input("演算法")
+    app.button[0].click().run()
+    assert not app.exception
+
+    # 驗證送出的條件為修改後的「演算法」，而不是被跳回「資料結構」
+    ctrl = app.session_state["ctrl"]
+    assert ctrl.submitted_spec is not None
+    assert ctrl.submitted_spec.subject_keyword == "演算法"
+    assert app.text_input(key="q_subject").value == "演算法"
+

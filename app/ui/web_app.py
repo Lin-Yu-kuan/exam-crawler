@@ -352,15 +352,30 @@ def _format_spec_label(spec: QuerySpec) -> str:
 
 
 def _render_query(controller: AppController) -> None:
+    if "q_start" not in st.session_state:
+        st.session_state["q_start"] = 113
+    if "q_end" not in st.session_state:
+        st.session_state["q_end"] = 113
+    if "q_exam" not in st.session_state:
+        st.session_state["q_exam"] = ""
+    if "q_category" not in st.session_state:
+        st.session_state["q_category"] = ""
+    if "q_subject" not in st.session_state:
+        st.session_state["q_subject"] = ""
+    if "q_full" not in st.session_state:
+        st.session_state["q_full"] = False
+
     recent_specs = controller.recent_query_specs()
 
     if recent_specs:
         history_options = ["（點選歷史條件自動帶入…）"] + [_format_spec_label(s) for s in recent_specs]
+        ver = st.session_state.get("history_ver", 0)
+        curr_key = f"history-selector-{ver}"
         selected_history = st.selectbox(
             "最近查詢(自動帶入下方篩選條件)",
             options=history_options,
             index=0,
-            key="history-selector",
+            key=curr_key,
         )
         if selected_history != "（點選歷史條件自動帶入…）":
             idx = history_options.index(selected_history) - 1
@@ -371,6 +386,9 @@ def _render_query(controller: AppController) -> None:
             st.session_state["q_category"] = chosen_spec.category_keyword or ""
             st.session_state["q_subject"] = chosen_spec.subject_keyword or ""
             st.session_state["q_full"] = not bool(chosen_spec.exam_name_keyword or chosen_spec.category_keyword or chosen_spec.subject_keyword)
+            st.session_state.pop(curr_key, None)
+            st.session_state["history_ver"] = ver + 1
+            st.rerun()
 
     with st.form("query-form"):
         col1, col2 = st.columns(2)
@@ -378,35 +396,29 @@ def _render_query(controller: AppController) -> None:
             "年度（起，民國）",
             min_value=81,
             max_value=115,
-            value=st.session_state.get("q_start", 113),
             key="q_start",
         )
         end = col2.number_input(
             "年度（迄，民國）",
             min_value=81,
             max_value=115,
-            value=st.session_state.get("q_end", 113),
             key="q_end",
         )
         col_exam, col_category, col_subject = st.columns(3)
         exam_keyword = col_exam.text_input(
             "考試名稱關鍵字（可留空）",
-            value=st.session_state.get("q_exam", ""),
             key="q_exam",
         )
         category_keyword = col_category.text_input(
             "類科關鍵字（可留空）",
-            value=st.session_state.get("q_category", ""),
             key="q_category",
         )
         subject_keyword = col_subject.text_input(
             "科目關鍵字（可留空）",
-            value=st.session_state.get("q_subject", ""),
             key="q_subject",
         )
         full_fetch = st.checkbox(
             "不套用關鍵字，抓整年度全部考科",
-            value=st.session_state.get("q_full", False),
             key="q_full",
             help=(
                 "勾選後會忽略上面三個關鍵字，直接向考選部下載整年度資料"
