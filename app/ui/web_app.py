@@ -29,7 +29,7 @@ from app.engine.downloader import Downloader
 from app.engine.path_builder import DEFAULT_TEMPLATES, PathMode
 from app.engine.query_service import QueryService
 from app.engine.task_service import DEFAULT_WORKERS, MAX_WORKERS, MIN_WORKERS, TaskService, TaskServiceError
-from app.models import ParseStatus, QuerySpec, TaskStatus
+from app.models import AssetRole, ParseStatus, QuerySpec, TaskStatus
 from app.storage.manifest import ManifestStore
 from app.ui.controller import CONTROLLER_API_VERSION, DIMENSION_LABELS, DIMENSIONS, AppController
 

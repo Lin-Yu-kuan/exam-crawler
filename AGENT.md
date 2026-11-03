@@ -137,6 +137,8 @@ Streamlit 重跑不可重複啟動任務；以任務 ID 與快照 ID 綁定背�
 
 日誌以穩定事件碼加繁體中文訊息記錄錯誤分類與 ID；不輸出 Session Cookie、表單 token 或敏感 URL query。對外錯誤要說明可採取的動作。
 
+所有附件狀態的 UI 分支（完成、略過、共用、搬移、失敗、不支援、取消）都必須有 AppTest 或等效渲染覆蓋；不得只測試成功路徑。只在罕見分支執行的程式碼很容易漏匯入，曾因此在「部分附件加載失敗」區塊拋出 `NameError`，使使用者看不到失敗原因。提交前必須執行 `python -m pytest tests/test_static_undefined_names.py`（pyflakes 掃描 `app/` 的 undefined name）；未定義名稱屬必須修掉的缺陷，不可用 `try/except NameError` 或延後匯入掩蓋。
+
 ## 8. 測試與完成條件
 
 常規測試使用離線 fixture 及模擬 HTTP；不在每次測試對官方大量查詢。網路實測採小樣本與相同限速，記錄日期、結果及未驗證範圍。

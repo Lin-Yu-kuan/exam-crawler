@@ -113,6 +113,7 @@ python -m venv .venv
 | 變更歸檔模式後，舊資料夾還在／檔案沒有搬到新結構 | 按「🔁 依目前模式整理已下載檔案」。已完成的檔案會搬到新路徑並清除舊空資料夾，不會重新下載；共用檔案由擁有者搬移並保留一份 |
 | 想清掉舊模式留下的重複檔 | 按「🧹 清理重複舊檔」。只會刪除內容 SHA-256 與某個已追蹤檔案完全相同、且已不再被追蹤的 PDF；內容不同的手動檔案會保留 |
 | 想核對實際落地結果 | 執行 `python scripts/check_ui_downloads.py`：列出 PDF 檔數、大小與 manifest 的附件狀態／題型 |
+| 出現「NameError」或畫面整個變成錯誤頁 | 屬程式缺陷：請回報並附上 traceback。開發端以 `pytest tests/test_static_undefined_names.py`（pyflakes）與 UI 失敗清單測試把關 |
 
 ## 7. 已知限制
 
