@@ -74,7 +74,7 @@ def test_query_form_wording_matches_user_feedback() -> None:
     assert "關鍵字會先送官方進階查詢" not in source, "#1 整段說明要拿掉"
     assert "重新向官網下載（忽略今日快取）" in source, "#3 要白話"
     assert "強制重新查詢" not in source
-    assert 'st.form_submit_button("查詢試題"' in source, "#4 按鈕改「查詢試題」"
+    assert 'st.button("查詢試題"' in source, "#4 按鈕改「查詢試題」"
     assert "尚未取得資料。按「查詢試題」" in source
     # 兩個勾選項都要有說明
     assert source.count("help=(") >= 2

@@ -31,7 +31,13 @@ from app.engine.query_service import QueryService
 from app.engine.task_service import DEFAULT_WORKERS, MAX_WORKERS, MIN_WORKERS, TaskService, TaskServiceError
 from app.models import AssetRole, ParseStatus, QuerySpec, TaskStatus
 from app.storage.manifest import ManifestStore
-from app.ui.controller import CONTROLLER_API_VERSION, DIMENSION_LABELS, DIMENSIONS, AppController
+from app.ui.controller import (
+    CONTROLLER_API_VERSION,
+    DIMENSION_LABELS,
+    DIMENSIONS,
+    AppController,
+    validate_query_inputs,
+)
 
 def is_cloud_env() -> bool:
     """判斷是否運行於 Streamlit Cloud 或 Linux 無原生視窗的雲端環境。"""
@@ -348,6 +354,46 @@ def _format_spec_label(spec: QuerySpec) -> str:
     return f"{year_str}｜{filter_str}"
 
 
+def _form_spec(
+    start: int,
+    end: int,
+    *,
+    exam_name_keyword: str,
+    category_keyword: str,
+    subject_keyword: str,
+    full_fetch: bool,
+) -> QuerySpec:
+    """把查詢表單的輸入轉成查詢條件；勾選「不套用關鍵字」時忽略三個關鍵字。"""
+    if full_fetch:
+        return QuerySpec(start, end)
+    return QuerySpec(
+        start,
+        end,
+        exam_name_keyword=exam_name_keyword.strip(),
+        category_keyword=category_keyword.strip(),
+        subject_keyword=subject_keyword.strip(),
+    )
+
+
+def _warn_unapplied_conditions(
+    controller: AppController, form_spec: QuerySpec | None
+) -> None:
+    """表單條件與已查詢條件不同時明確提示，避免把舊結果誤當成新條件的結果。"""
+    snapshot = controller.snapshot
+    if snapshot is None:
+        return
+    if form_spec is None:
+        st.warning("上方年度條件無效（起年不得大於迄年）；下方顯示的仍是上次查詢的結果。")
+        return
+    if form_spec.cache_payload() == snapshot.spec.cache_payload():
+        return
+    st.warning(
+        f"上方條件尚未查詢（{_format_spec_label(form_spec)}）；"
+        f"下方顯示的是上次查詢（{_format_spec_label(snapshot.spec)}）的結果，"
+        "請按「查詢試題」重新取得。"
+    )
+
+
 def _render_query(controller: AppController) -> None:
     if "q_start" not in st.session_state:
         st.session_state["q_start"] = 113
@@ -387,69 +433,74 @@ def _render_query(controller: AppController) -> None:
             st.session_state["history_ver"] = ver + 1
             st.rerun()
 
-    with st.form("query-form"):
-        col1, col2 = st.columns(2)
-        start = col1.number_input(
-            "年度（起，民國）",
-            min_value=81,
-            max_value=115,
-            key="q_start",
+    col1, col2 = st.columns(2)
+    start = col1.number_input(
+        "年度（起，民國）",
+        min_value=81,
+        max_value=115,
+        key="q_start",
+    )
+    end = col2.number_input(
+        "年度（迄，民國）",
+        min_value=81,
+        max_value=115,
+        key="q_end",
+    )
+    col_exam, col_category, col_subject = st.columns(3)
+    exam_keyword = col_exam.text_input(
+        "考試名稱關鍵字（可留空）",
+        key="q_exam",
+    )
+    category_keyword = col_category.text_input(
+        "類科關鍵字（可留空）",
+        key="q_category",
+    )
+    subject_keyword = col_subject.text_input(
+        "科目關鍵字（可留空）",
+        key="q_subject",
+    )
+    full_fetch = st.checkbox(
+        "不套用關鍵字，抓整年度全部考科",
+        key="q_full",
+        help=(
+            "勾選後會忽略上面三個關鍵字，直接向考選部下載整年度資料"
+            "（113 年約 3,566 筆、6 MB、約 11 秒）。候選清單最完整，但比較慢；"
+            "平常建議先用關鍵字縮小範圍。"
+        ),
+    )
+    force = st.checkbox(
+        "重新向官網下載（忽略今日快取）",
+        key="q_force",
+        help=(
+            "相同條件在 24 小時內會直接用本機存好的結果（0 次請求）。"
+            "只有想確認官網有沒有更新時才需要勾選，勾了會重新查詢（約 11 秒）。"
+        ),
+    )
+    submitted = st.button("查詢試題", type="primary", width="stretch")
+
+    form_spec = (
+        _form_spec(
+            int(start),
+            int(end),
+            exam_name_keyword=exam_keyword,
+            category_keyword=category_keyword,
+            subject_keyword=subject_keyword,
+            full_fetch=full_fetch,
         )
-        end = col2.number_input(
-            "年度（迄，民國）",
-            min_value=81,
-            max_value=115,
-            key="q_end",
-        )
-        col_exam, col_category, col_subject = st.columns(3)
-        exam_keyword = col_exam.text_input(
-            "考試名稱關鍵字（可留空）",
-            key="q_exam",
-        )
-        category_keyword = col_category.text_input(
-            "類科關鍵字（可留空）",
-            key="q_category",
-        )
-        subject_keyword = col_subject.text_input(
-            "科目關鍵字（可留空）",
-            key="q_subject",
-        )
-        full_fetch = st.checkbox(
-            "不套用關鍵字，抓整年度全部考科",
-            key="q_full",
-            help=(
-                "勾選後會忽略上面三個關鍵字，直接向考選部下載整年度資料"
-                "（113 年約 3,566 筆、6 MB、約 11 秒）。候選清單最完整，但比較慢；"
-                "平常建議先用關鍵字縮小範圍。"
-            ),
-        )
-        force = st.checkbox(
-            "重新向官網下載（忽略今日快取）",
-            value=False,
-            help=(
-                "相同條件在 24 小時內會直接用本機存好的結果（0 次請求）。"
-                "只有想確認官網有沒有更新時才需要勾選，勾了會重新查詢（約 11 秒）。"
-            ),
-        )
-        submitted = st.form_submit_button("查詢試題", type="primary", width="stretch")
+        if start <= end
+        else None
+    )
 
     if submitted:
-        spec = (
-            QuerySpec(int(start), int(end))
-            if full_fetch
-            else QuerySpec(
-                int(start),
-                int(end),
-                exam_name_keyword=exam_keyword.strip(),
-                category_keyword=category_keyword.strip(),
-                subject_keyword=subject_keyword.strip(),
-            )
-        )
-        with st.spinner("正在取得考畢試題清單…"):
-            controller.query(spec, force=force)
-        _reset_candidate_widgets()
-        if controller.last_error:
-            st.error(controller.last_error)
+        errors = validate_query_inputs(int(start), int(end))
+        if errors:
+            st.error("；".join(errors))
+        elif form_spec is not None:
+            with st.spinner("正在取得考畢試題清單…"):
+                controller.query(form_spec, force=force)
+            _reset_candidate_widgets()
+            if controller.last_error:
+                st.error(controller.last_error)
 
     snapshot = controller.snapshot
     if snapshot is None:
@@ -461,6 +512,7 @@ def _render_query(controller: AppController) -> None:
         f"**{controller.query_scope_text()}** {stamp}｜"
         f"取得 {len(snapshot.records)} 筆紀錄、{len(snapshot.years)} 個年度"
     )
+    _warn_unapplied_conditions(controller, form_spec)
     for warning in snapshot.warnings[:5]:
         st.warning(warning)
 

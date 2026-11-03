@@ -12,6 +12,8 @@ import pytest
 
 from streamlit.testing.v1 import AppTest
 
+from app.models import QuerySpec
+
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 FIXTURE = ROOT / "tests" / "fixtures" / "html" / "result_sample.html"
 
@@ -175,4 +177,79 @@ web_app._render_query(controller)
     assert ctrl.submitted_spec is not None
     assert ctrl.submitted_spec.subject_keyword == "演算法"
     assert app.text_input(key="q_subject").value == "演算法"
+
+
+def test_unapplied_condition_change_is_warned() -> None:
+    """年度改了卻沒按「查詢試題」時，必須標明結果仍屬上一次的條件。"""
+    script = '''
+import streamlit as st
+from app.models import ParseStatus, QuerySnapshot, QuerySpec
+from app.ui import web_app
+
+
+def _snapshot(spec):
+    return QuerySnapshot(
+        snapshot_id=f"snap-{spec.start_year}-{spec.end_year}",
+        cache_key="key",
+        spec=spec,
+        records=(),
+        status=ParseStatus.OK,
+        years=(),
+        acquired_at="2026-11-03T19:00:00+08:00",
+        parser_version="test",
+        source_url="https://example.invalid",
+    )
+
+
+class _DummyController:
+    last_error = None
+
+    def __init__(self):
+        self.snapshot = _snapshot(QuerySpec(114, 114, subject_keyword="資料結構"))
+        self.submitted_spec = None
+
+    def recent_query_specs(self, limit=10):
+        return ()
+
+    def query_scope_text(self):
+        spec = self.snapshot.spec
+        parts = [f"年度 {spec.start_year}–{spec.end_year}"]
+        if spec.subject_keyword:
+            parts.append(f"科目含「{spec.subject_keyword}」")
+        return "｜".join(parts)
+
+    def query(self, spec, force=False):
+        self.submitted_spec = spec
+        self.snapshot = _snapshot(spec)
+
+
+for key, value in {"q_start": 114, "q_end": 114, "q_subject": "資料結構"}.items():
+    if key not in st.session_state:
+        st.session_state[key] = value
+if "ctrl" not in st.session_state:
+    st.session_state["ctrl"] = _DummyController()
+
+web_app._render_query(st.session_state["ctrl"])
+'''
+    app = AppTest.from_string(script, default_timeout=30)
+    app.run()
+    assert not app.exception
+    assert not [w for w in app.warning if "尚未查詢" in w.value], "條件相符時不應提示"
+
+    # 只改迄年、還沒送出查詢：結果仍屬 114–114，必須明確提示
+    app.number_input(key="q_end").set_value(115).run()
+    assert not app.exception
+    warnings = [w.value for w in app.warning if "尚未查詢" in w.value]
+    assert warnings, "改動年度後必須提示條件尚未查詢"
+    assert "114–115年" in warnings[0]
+    assert "114年｜科目：資料結構" in warnings[0]
+    assert any("年度 114–114" in m.value for m in app.markdown if "筆紀錄" in m.value)
+
+    # 按下查詢後，送出的條件就是表單上的 114–115，提示應消失
+    app.button[0].click().run()
+    assert not app.exception
+    ctrl = app.session_state["ctrl"]
+    assert ctrl.submitted_spec == QuerySpec(114, 115, subject_keyword="資料結構")
+    assert not [w for w in app.warning if "尚未查詢" in w.value]
+    assert any("年度 114–115" in m.value for m in app.markdown if "筆紀錄" in m.value)
 
