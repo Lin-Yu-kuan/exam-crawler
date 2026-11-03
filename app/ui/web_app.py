@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import io
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -50,20 +51,56 @@ DEFAULT_CLOUD_ROOT = str(Path(tempfile.gettempdir()) / "moex_exam_bank")
 DEFAULT_ROOT = DEFAULT_CLOUD_ROOT if is_cloud_env() else DEFAULT_LOCAL_ROOT
 SYSTEM_DIR_NAME = "_系統資料"
 CLOUD_ROOT_PREFIX = "國考題庫"
+CLOUD_ROOT_PLACEHOLDER = f"{CLOUD_ROOT_PREFIX}_YYYYMMDD_HHMMSS"
+CLOUD_ROOT_NAMED_KEY = "cloud_root_named_by_download"
+PENDING_DOWNLOAD_KEY = "pending_download_start"
 
 
 def cloud_root_name(stamp: str | None = None) -> str:
-    """雲端題庫根目錄名稱：國考題庫_YYYYMMDD_HHMM。"""
-    return f"{CLOUD_ROOT_PREFIX}_{stamp or time.strftime('%Y%m%d_%H%M')}"
+    """雲端題庫根目錄名稱：國考題庫_YYYYMMDD_HHMMSS。"""
+    return f"{CLOUD_ROOT_PREFIX}_{stamp or time.strftime('%Y%m%d_%H%M%S')}"
 
 
 def new_cloud_root() -> str:
-    """每次工作階段使用專屬暫存根目錄，避免不同使用者的題庫與下載紀錄互相混用。"""
+    """以目前時間建立專屬暫存根目錄，避免不同使用者的題庫與下載紀錄互相混用。"""
     return str(Path(tempfile.gettempdir()) / cloud_root_name())
 
 
+def rotate_cloud_root() -> str:
+    """雲端模式：下載啟動時改用當下時間命名的根目錄，讓資料夾與 ZIP 反映實際下載時間。"""
+    previous = st.session_state.get("download_root")
+    root = new_cloud_root()
+    st.session_state["download_root"] = root
+    st.session_state[CLOUD_ROOT_NAMED_KEY] = True
+    if previous and Path(previous) != Path(root):
+        _discard_unused_cloud_root(previous)
+    return root
+
+
+def _discard_unused_cloud_root(path: str | None) -> None:
+    """清除尚未下載任何檔案的舊根目錄；只要殘留暫存檔或 PDF 就保留。"""
+    if not path:
+        return
+    root = Path(path)
+    try:
+        if not root.is_dir():
+            return
+        if any(entry.name != SYSTEM_DIR_NAME for entry in root.iterdir()):
+            return
+        shutil.rmtree(root, ignore_errors=True)
+    except OSError:
+        pass
+
+
+def cloud_display_root(root: str) -> str:
+    """雲端尚未下載前顯示待命名的佔位名稱，下載後顯示實際根目錄。"""
+    if not is_cloud_env() or st.session_state.get(CLOUD_ROOT_NAMED_KEY):
+        return root
+    return CLOUD_ROOT_PLACEHOLDER
+
+
 def zip_file_name(root: str, task_id: str) -> str:
-    """雲端 ZIP 與根目錄同名（國考題庫_YYYYMMDD_HHMM.zip）；本機保留任務識別。"""
+    """雲端 ZIP 與根目錄同名（國考題庫_YYYYMMDD_HHMMSS.zip）；本機保留任務識別。"""
     if is_cloud_env():
         return f"{Path(root).name}.zip"
     return f"國考題庫_{task_id}_{time.strftime('%Y%m%d_%H%M%S')}.zip"
@@ -129,8 +166,6 @@ def resolve_manifest_path(root: str | Path) -> Path:
     legacy_db = root_path / "manifest.db"
 
     if legacy_db.exists() and not target_db.exists():
-        import shutil
-
         shutil.move(str(legacy_db), str(target_db))
         for suffix in ("-wal", "-shm"):
             legacy_extra = root_path / f"manifest.db{suffix}"
@@ -140,8 +175,6 @@ def resolve_manifest_path(root: str | Path) -> Path:
     elif not target_db.exists() and str(root) == DEFAULT_ROOT:
         old_default_db = Path("downloads") / SYSTEM_DIR_NAME / "manifest.db"
         if old_default_db.exists():
-            import shutil
-
             shutil.copy2(str(old_default_db), str(target_db))
 
     return target_db
@@ -292,8 +325,8 @@ def _sidebar() -> tuple[dict, bool]:
         if cloud_mode:
             root = st.session_state["download_root"]
             st.info(
-                "☁️ 雲端模式：完成後可直接一鍵下載分類打包的 ZIP 題庫包；"
-                f"ZIP 檔名為 `{Path(root).name}.zip`。"
+                "☁️ 雲端模式：按「開始下載」時以當下時間建立根目錄，"
+                f"完成後可一鍵下載同名 ZIP 題庫包（`{Path(cloud_display_root(root)).name}.zip`）。"
             )
         else:
             root = st.text_input("下載根目錄", key="download_root", disabled=task_active)
@@ -314,7 +347,7 @@ def _sidebar() -> tuple[dict, bool]:
         )
         with st.container(border=True):
             st.caption("歸檔結構預覽")
-            st.code(build_tree_preview(root, template), language="text")
+            st.code(build_tree_preview(cloud_display_root(root), template), language="text")
 
         db_path = str(resolve_manifest_path(root))
         with st.expander("進階設定"):
@@ -635,13 +668,19 @@ def _render_task(controller: AppController, auto_refresh: bool, root: str = DEFA
         for col, label, value in zip(cols, ("已選考科", "試題附件", "答案附件"),
                                      (stats.records, stats.question_assets, stats.answer_assets)):
             col.metric(label, value, border=True)
-        st.caption(f"儲存位置：{root}")
+        st.caption(f"儲存位置：{cloud_display_root(root)}")
         with st.expander("檔案與傳輸明細"):
             st.write(f"預計歸檔 {stats.total_files} 個檔案；實際傳輸（去重）{stats.unique_urls} 份。")
             st.caption("內容相同的附件會共用同一個檔案，實際檔案數可能較少；題型與檔名以下載驗證後為準。")
     disabled = not controller.can_download()
     btn_label = "開始加載" if is_cloud_env() else "開始下載"
-    if st.button(btn_label, type="primary", disabled=disabled, width="stretch"):
+    clicked = st.button(btn_label, type="primary", disabled=disabled, width="stretch")
+    pending_start = bool(st.session_state.pop(PENDING_DOWNLOAD_KEY, False))
+    if clicked and is_cloud_env() and not controller.is_task_active():
+        rotate_cloud_root()
+        st.session_state[PENDING_DOWNLOAD_KEY] = True
+        st.rerun()
+    if clicked or pending_start:
         state = controller.start_download()
         if controller.last_error:
             st.error(controller.last_error)

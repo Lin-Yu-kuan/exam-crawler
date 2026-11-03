@@ -50,18 +50,17 @@ def test_build_tree_preview_all_modes() -> None:
 
 
 def test_sidebar_cloud_root_uses_timestamped_folder(tmp_path, monkeypatch) -> None:
-    """雲端根目錄須為國考題庫_YYYYMMDD_HHMM，且歸檔結構預覽顯示同一路徑。"""
+    """雲端根目錄為國考題庫_YYYYMMDD_HHMMSS；下載前預覽顯示待命名的佔位名稱。"""
     monkeypatch.setattr(web_app, "is_cloud_env", lambda: True)
     monkeypatch.setattr(web_app.tempfile, "tempdir", str(tmp_path))
     script = '''
-import re
 import streamlit as st
 from app.ui import web_app
 
 settings, _ = web_app._sidebar()
 st.session_state["root"] = settings["root"]
 st.session_state["preview"] = web_app.build_tree_preview(
-    settings["root"], web_app.DEFAULT_TEMPLATES["A"]
+    web_app.cloud_display_root(settings["root"]), web_app.DEFAULT_TEMPLATES["A"]
 )
 '''
     app = AppTest.from_string(script, default_timeout=30)
@@ -70,9 +69,180 @@ st.session_state["preview"] = web_app.build_tree_preview(
 
     root = pathlib.Path(app.session_state["root"])
     assert root.parent == tmp_path
-    assert re.fullmatch(r"國考題庫_\d{8}_\d{4}", root.name)
+    assert re.fullmatch(r"國考題庫_\d{8}_\d{6}", root.name)
     assert root.is_dir()
-    assert root.name in app.session_state["preview"]
+    assert web_app.CLOUD_ROOT_PLACEHOLDER in app.session_state["preview"]
+    assert root.name not in app.session_state["preview"]
+
+
+def test_cloud_root_is_renamed_when_download_starts(tmp_path, monkeypatch) -> None:
+    """按下下載時才以當下時間命名根目錄，並清除尚未使用的空白根目錄。"""
+    monkeypatch.setattr(web_app, "is_cloud_env", lambda: True)
+    monkeypatch.setattr(web_app.tempfile, "tempdir", str(tmp_path))
+    script = '''
+import itertools
+import streamlit as st
+from app.ui import web_app
+
+_stamps = itertools.count(1)
+web_app.cloud_root_name = lambda stamp=None: f"國考題庫_20261103_2125{next(_stamps):02d}"
+
+if "session_root" not in st.session_state:
+    settings, _ = web_app._sidebar()
+    st.session_state["session_root"] = settings["root"]
+
+if "download_root_value" not in st.session_state:
+    st.session_state["download_root_value"] = web_app.rotate_cloud_root()
+'''
+    app = AppTest.from_string(script, default_timeout=30)
+    app.run()
+    assert not app.exception
+
+    session_root = pathlib.Path(app.session_state["session_root"])
+    download_root = pathlib.Path(app.session_state["download_root_value"])
+    assert download_root.parent == tmp_path
+    assert download_root.name == "國考題庫_20261103_212502"
+    assert download_root != session_root
+    assert app.session_state[web_app.CLOUD_ROOT_NAMED_KEY] is True
+    # 尚未下載的舊根目錄只剩 _系統資料，應被清除
+    assert not session_root.exists()
+
+
+def test_discard_unused_cloud_root_keeps_downloaded_files(tmp_path) -> None:
+    """已有 PDF 的根目錄不得被清除。"""
+    root = tmp_path / "國考題庫_20261103_212530"
+    (root / web_app.SYSTEM_DIR_NAME).mkdir(parents=True)
+    (root / "資料結構").mkdir()
+    (root / "資料結構" / "試題.pdf").write_bytes(b"%PDF-1.4 dummy")
+
+    web_app._discard_unused_cloud_root(str(root))
+    assert (root / "資料結構" / "試題.pdf").is_file()
+
+
+def test_discard_unused_cloud_root_removes_empty_session_dir(tmp_path) -> None:
+    root = tmp_path / "國考題庫_20261103_212500"
+    (root / web_app.SYSTEM_DIR_NAME).mkdir(parents=True)
+
+    web_app._discard_unused_cloud_root(str(root))
+    assert not root.exists()
+
+
+def test_cloud_download_click_renames_root_then_starts_task(tmp_path, monkeypatch) -> None:
+    """按下「開始下載」後：根目錄改用下載時間命名，任務在新的根目錄啟動。"""
+    fixture = pathlib.Path(__file__).resolve().parent / "fixtures" / "html" / "result_sample.html"
+    monkeypatch.setattr(web_app, "is_cloud_env", lambda: True)
+    monkeypatch.setattr(web_app.tempfile, "tempdir", str(tmp_path))
+    script = '''
+import pathlib
+
+import streamlit as st
+
+from app.crawler.parser import parse_result_page
+from app.engine.filter import FilterState, build_candidates
+from app.engine.task_service import TaskState
+from app.models import QuerySnapshot, QuerySpec, TaskStatus
+from app.ui import web_app
+from app.ui.controller import AppController
+
+
+def _next_stamp(stamp=None):
+    st.session_state["stamp"] = st.session_state.get("stamp", 0) + 1
+    return "國考題庫_20261103_2130" + f"{st.session_state['stamp']:02d}"
+
+
+web_app.cloud_root_name = _next_stamp
+
+
+class _NoNetwork:
+    def __getattr__(self, name):
+        def _boom(*args, **kwargs):
+            raise AssertionError("UI 不應呼叫 " + name)
+
+        return _boom
+
+
+class _Service(_NoNetwork):
+    api_version = web_app.EXPECTED_TASK_SERVICE_API_VERSION
+
+    def __init__(self):
+        self.submitted = []
+
+    def submit(self, snapshot, frozen):
+        state = TaskState(
+            task_id="task-1",
+            snapshot_id=snapshot.snapshot_id,
+            status=TaskStatus.COMPLETED,
+            attempt=1,
+            total=0,
+            completed=0,
+            skipped=0,
+            deduped=0,
+            failed=0,
+            cancelled=0,
+            pending=0,
+            started_at=None,
+            finished_at=None,
+        )
+        self.submitted.append(state)
+        return state
+
+    def get(self, task_id):
+        return self.submitted[-1]
+
+    def export_results(self, task_id):
+        return ()
+
+
+if "service" not in st.session_state:
+    st.session_state["service"] = _Service()
+    st.session_state["initial_root"] = web_app.new_cloud_root()
+    pathlib.Path(st.session_state["initial_root"], web_app.SYSTEM_DIR_NAME).mkdir(parents=True)
+    st.session_state["download_root"] = st.session_state["initial_root"]
+
+html = pathlib.Path(r"__FIXTURE__").read_text(encoding="utf-8")
+page = parse_result_page(html)
+snapshot = QuerySnapshot(
+    snapshot_id="snap-cloud",
+    cache_key="key-cloud",
+    spec=QuerySpec(113, 113),
+    records=page.records,
+    status=page.status,
+    years=(),
+    acquired_at="2026-11-03T12:00:00+08:00",
+    parser_version="html-v1",
+    source_url="https://wwwq.moex.gov.tw/exam/wFrmExamQandASearch.aspx",
+)
+root = st.session_state["download_root"]
+controller = AppController(
+    query_service=_NoNetwork(),
+    task_service=st.session_state["service"],
+    root=root,
+)
+controller.snapshot = snapshot
+controller.state = build_candidates(snapshot.records, FilterState()).initial_state(
+    year_start=113, year_end=113
+)
+web_app._render_task(controller, False, root)
+'''
+    app = AppTest.from_string(
+        script.replace("__FIXTURE__", str(fixture)), default_timeout=60
+    )
+    app.run()
+    assert not app.exception
+
+    initial_root = pathlib.Path(app.session_state["initial_root"])
+    assert initial_root.exists()
+
+    app.button[0].click().run()
+    assert not app.exception
+
+    service = app.session_state["service"]
+    assert len(service.submitted) == 1, "按下下載後應在同一次操作啟動任務"
+    assert web_app.PENDING_DOWNLOAD_KEY not in app.session_state
+
+    download_root = pathlib.Path(app.session_state["download_root"])
+    assert download_root.name == "國考題庫_20261103_213002", "根目錄需改用下載當下的時間"
+    assert not initial_root.exists(), "未使用的舊根目錄應清除"
 
 
 def test_sidebar_mode_labels_only_has_three_modes() -> None:
