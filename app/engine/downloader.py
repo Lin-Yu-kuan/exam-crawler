@@ -11,8 +11,8 @@ from __future__ import annotations
 
 import hashlib
 import os
-import shutil
 import time
+import unicodedata
 from contextlib import nullcontext
 from dataclasses import dataclass
 from pathlib import Path
@@ -110,6 +110,7 @@ class DownloadResult:
     sha256: str | None = None
     version: int = 1
     skipped: bool = False
+    relocated: bool = False
     dedupe_of: str | None = None
     error_code: str | None = None
     error_message: str | None = None
@@ -129,6 +130,10 @@ def _sha256_file(path: Path) -> str:
         for chunk in iter(lambda: handle.read(CHUNK_SIZE), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _path_key(path: str) -> str:
+    return unicodedata.normalize("NFC", path.replace("\\", "/")).casefold()
 
 
 class Downloader:
@@ -188,45 +193,19 @@ class Downloader:
             AttachmentStatus.SKIPPED,
         ):
             if self._is_intact(existing):
-                old_file = self._root.joinpath(*existing.path.split("/"))
-                inspection = self._inspector(old_file) if target.resolve_path is not None else None
-                desired_relative = (
-                    target.resolve_path(inspection)
-                    if target.resolve_path is not None and inspection is not None
-                    else target.relative_path
-                )
-                if desired_relative == existing.path:
+                try:
+                    return self._relocate_existing(target, existing)
+                except OSError as exc:
+                    message = (
+                        f"搬移既有檔案失敗：{exc}。"
+                        "檔案可能被其他程式占用，請關閉後重新整理或重新下載"
+                    )
                     return DownloadResult(
                         asset_id=asset.asset_id,
-                        status=AttachmentStatus.SKIPPED,
-                        relative_path=existing.path,
-                        size_bytes=existing.size or 0,
-                        sha256=existing.sha256,
-                        version=existing.version,
-                        skipped=True,
+                        status=AttachmentStatus.FAILED,
+                        error_code="io-error",
+                        error_message=message,
                     )
-                new_file = self._root.joinpath(*desired_relative.split("/"))
-                ensure_within_root(self._root, new_file)
-                new_file.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(old_file, new_file)
-                self._store.complete_attachment(
-                    asset_id=asset.asset_id,
-                    path=desired_relative,
-                    sha256=existing.sha256,
-                    size=existing.size or 0,
-                    version=existing.version,
-                    question_type=existing.question_type
-                    or (inspection.evidence.question_type.value if inspection else None),
-                )
-                return DownloadResult(
-                    asset_id=asset.asset_id,
-                    status=AttachmentStatus.COMPLETED,
-                    relative_path=desired_relative,
-                    size_bytes=existing.size or 0,
-                    sha256=existing.sha256,
-                    version=existing.version,
-                    skipped=False,
-                )
 
         if should_cancel is not None and should_cancel():
             return self._cancelled(target, "已取消，未開始下載")
@@ -288,6 +267,197 @@ class Downloader:
                     error_code="io-error",
                     error_message=message,
                 )
+
+    # --- 既有檔案搬移 -------------------------------------------------
+    def relocate(
+        self, target: DownloadTarget, *, desired_relative: str | None = None
+    ) -> DownloadResult:
+        """只搬移已完成的檔案，不發出網路請求。"""
+        asset = target.asset
+        existing = self._store.get_attachment(asset.asset_id)
+        if (
+            existing is None
+            or existing.status not in (AttachmentStatus.COMPLETED, AttachmentStatus.SKIPPED)
+            or not self._is_intact(existing)
+        ):
+            return DownloadResult(
+                asset_id=asset.asset_id,
+                status=AttachmentStatus.FAILED,
+                error_code="not-relocatable",
+                error_message="附件尚未完成或檔案已遺失，需重新下載",
+            )
+        try:
+            return self._relocate_existing(
+                target, existing, desired_relative=desired_relative
+            )
+        except OSError as exc:
+            return DownloadResult(
+                asset_id=asset.asset_id,
+                status=AttachmentStatus.FAILED,
+                error_code="io-error",
+                error_message=(
+                    f"搬移既有檔案失敗：{exc}。"
+                    "檔案可能被其他程式占用，請關閉後重新整理或重新下載"
+                ),
+            )
+
+    def cleanup_untracked_duplicates(
+        self, relative_paths: tuple[str, ...] | list[str]
+    ) -> tuple[str, ...]:
+        """刪除內容與已追蹤檔案完全相同、但已不再被追蹤的舊 PDF。"""
+        tracked = {
+            row.sha256
+            for row in self._store.list_attachments()
+            if row.sha256 and self._is_intact(row)
+        }
+        removed: list[str] = []
+        for relative in relative_paths:
+            path = self._root.joinpath(*relative.split("/"))
+            try:
+                ensure_within_root(self._root, path)
+            except Exception:
+                continue
+            if not path.is_file():
+                continue
+            try:
+                digest = _sha256_file(path)
+            except OSError:
+                continue
+            if digest not in tracked:
+                continue
+            try:
+                path.unlink()
+            except OSError:
+                continue
+            self._remove_empty_parents(path.parent)
+            removed.append(relative)
+        return tuple(removed)
+
+    def _relocate_existing(
+        self,
+        target: DownloadTarget,
+        existing,
+        *,
+        desired_relative: str | None = None,
+    ) -> DownloadResult:
+        """依目前模式搬移已完成的檔案；不重新下載。
+
+        模式變更後若只複製到新路徑，舊檔與舊資料夾會永久殘留；因此這裡採
+        「同檔案系統原子搬移→更新 manifest→清除空目錄」。
+        """
+        asset = target.asset
+        old_relative = existing.path
+        if not old_relative:
+            raise OSError("manifest 缺少既有檔案路徑")
+        old_file = self._root.joinpath(*old_relative.split("/"))
+        if desired_relative is None:
+            inspection = (
+                self._inspector(old_file) if target.resolve_path is not None else None
+            )
+            desired_relative = (
+                target.resolve_path(inspection)
+                if target.resolve_path is not None and inspection is not None
+                else target.relative_path
+            )
+
+        if _path_key(desired_relative) == _path_key(old_relative):
+            return DownloadResult(
+                asset_id=asset.asset_id,
+                status=AttachmentStatus.SKIPPED,
+                relative_path=old_relative,
+                size_bytes=existing.size or 0,
+                sha256=existing.sha256,
+                version=existing.version,
+                skipped=True,
+            )
+
+        # 共用檔只由 dedupe 擁有者搬移；其他附件仍指向同一個實體檔。
+        sharers = self._store.list_attachments_at_path(
+            old_relative, exclude_asset_id=asset.asset_id
+        )
+        if sharers and (
+            existing.dedupe_of is not None
+            or any(row.asset_id < asset.asset_id for row in sharers)
+        ):
+            return DownloadResult(
+                asset_id=asset.asset_id,
+                status=AttachmentStatus.SKIPPED,
+                relative_path=old_relative,
+                size_bytes=existing.size or 0,
+                sha256=existing.sha256,
+                version=existing.version,
+                skipped=True,
+            )
+
+        if existing.version > 1 and existing.sha256:
+            desired_relative = _versioned_relative(desired_relative, existing.sha256)
+        desired_relative = self._unique_relocate_target(
+            desired_relative, existing.sha256 or ""
+        )
+        new_file = self._root.joinpath(*desired_relative.split("/"))
+        ensure_within_root(self._root, new_file)
+        new_file.parent.mkdir(parents=True, exist_ok=True)
+
+        self._replace_with_retry(old_file, new_file)
+        self._remove_empty_parents(old_file.parent)
+        self._store.relocate_attachments(
+            old_path=old_relative,
+            new_path=desired_relative,
+            sha256=existing.sha256,
+        )
+
+        return DownloadResult(
+            asset_id=asset.asset_id,
+            status=AttachmentStatus.SKIPPED,
+            relative_path=desired_relative,
+            size_bytes=existing.size or 0,
+            sha256=existing.sha256,
+            version=existing.version,
+            skipped=True,
+            relocated=True,
+        )
+
+    def _unique_relocate_target(self, desired_relative: str, sha256: str) -> str:
+        """避免搬移時覆寫不同內容；相同內容則直接沿用。"""
+        candidate = desired_relative
+        for index in range(0, 100):
+            path = self._root.joinpath(*candidate.split("/"))
+            if not path.exists():
+                return candidate
+            if sha256 and _sha256_file(path) == sha256:
+                return candidate
+            if index == 0:
+                candidate = _versioned_relative(desired_relative, sha256)
+            else:
+                stem, suffix = candidate[:-4], candidate[-4:]
+                marker = f"_{index + 1}"
+                if marker not in stem[-8:]:
+                    candidate = f"{stem}{marker}{suffix}"
+        raise OSError("無法為既有檔案找到不衝突的目標檔名")
+
+    def _replace_with_retry(self, old_file: Path, new_file: Path) -> None:
+        """Windows 上檔案可能被檢視器或同步程式短暫鎖住。"""
+        last_error: OSError | None = None
+        for attempt in range(3):
+            try:
+                os.replace(old_file, new_file)
+                return
+            except PermissionError as exc:
+                last_error = exc
+                if attempt < 2:
+                    self._sleep(0.2)
+        if last_error is not None:
+            raise last_error
+
+    def _remove_empty_parents(self, start: Path) -> None:
+        """清除搬移後變空的舊資料夾，不越過下載根目錄。"""
+        current = start
+        while current != self._root and self._root in current.parents:
+            try:
+                current.rmdir()
+            except OSError:
+                break
+            current = current.parent
 
     # --- 單次嘗試 -----------------------------------------------------
     def _attempt(

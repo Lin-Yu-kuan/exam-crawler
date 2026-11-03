@@ -10,7 +10,7 @@ import pytest
 from app.crawler.parser import parse_result_page
 from app.engine.path_builder import PathMode
 from app.engine.query_service import QueryCancelled
-from app.engine.task_service import TaskState
+from app.engine.task_service import CleanupReport, ReorganizeReport, TaskState
 from app.models import (
     ParseStatus,
     QuerySnapshot,
@@ -55,7 +55,7 @@ class FakeQueryService:
 
 
 class FakeTaskService:
-    api_version = 1
+    api_version = 2
 
     def export_results(self, task_id):
         return ()
@@ -65,6 +65,8 @@ class FakeTaskService:
         self.status = TaskStatus.DOWNLOADING
         self.cancelled = 0
         self.retried = 0
+        self.reorganized: tuple[str, tuple[str, ...]] | None = None
+        self.cleaned = 0
 
     def submit(self, snapshot, frozen) -> TaskState:
         self.submissions.append((snapshot.snapshot_id, tuple(frozen.record_ids)))
@@ -99,6 +101,14 @@ class FakeTaskService:
         self.retried += 1
         self.status = TaskStatus.DOWNLOADING
         return self._state()
+
+    def reorganize(self, snapshot, frozen) -> ReorganizeReport:
+        self.reorganized = (snapshot.snapshot_id, tuple(frozen.record_ids))
+        return ReorganizeReport(moved=3, unchanged=1, shared=0, failed=0)
+
+    def cleanup_duplicate_untracked(self) -> CleanupReport:
+        self.cleaned += 1
+        return CleanupReport(removed=("old/dup.pdf",), kept=())
 
 
 def make_controller(html_dir: pathlib.Path, **snapshot_kwargs) -> tuple[AppController, FakeQueryService, FakeTaskService]:
@@ -380,6 +390,22 @@ def test_query_scope_text_without_keywords(html_dir) -> None:
     controller.query(QuerySpec(113, 113))
 
     assert controller.query_scope_text() == "年度 113–113"
+
+
+def test_controller_reorganize_and_cleanup(html_dir) -> None:
+    controller, _, tasks = make_controller(html_dir)
+    controller.query(QuerySpec(113, 113))
+
+    report = controller.reorganize()
+    assert report is not None
+    assert report.moved == 3
+    assert tasks.reorganized is not None
+    assert tasks.reorganized[0] == "snap-1"
+
+    cleanup = controller.cleanup_duplicates()
+    assert cleanup is not None
+    assert cleanup.removed == ("old/dup.pdf",)
+    assert tasks.cleaned == 1
 
 
 # --- 候選 chips 與快取 ------------------------------------------------

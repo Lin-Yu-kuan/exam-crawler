@@ -31,7 +31,13 @@ from app.engine.filter import (
 )
 from app.engine.path_builder import PathBuildError, PathMode, PathPlan, build_plan
 from app.engine.query_service import QueryCancelled
-from app.engine.task_service import SnapshotIncompleteError, TaskServiceError, TaskState
+from app.engine.task_service import (
+    CleanupReport,
+    ReorganizeReport,
+    SnapshotIncompleteError,
+    TaskServiceError,
+    TaskState,
+)
 from app.models import ExamRecord, QuerySnapshot, QuerySpec
 from app.storage.manifest import ReconcileReport
 
@@ -43,8 +49,8 @@ DIMENSION_LABELS = {"exams": "考試", "categories": "類科", "subjects": "科�
 
 #: 控制器對外介面版本；UI 以此判斷 session 內的實例是否過期（熱重載後必須重建）。
 #: 只要新增／修改 AppController 的公開方法就必須 +1。
-CONTROLLER_API_VERSION = 5
-EXPECTED_TASK_SERVICE_API_VERSION = 1
+CONTROLLER_API_VERSION = 6
+EXPECTED_TASK_SERVICE_API_VERSION = 2
 RESTART_REQUIRED_MESSAGE = "程式已更新，請重新啟動應用程式後重新查詢及下載"
 
 
@@ -78,6 +84,12 @@ class TaskServiceProtocol(Protocol):
         ...
 
     def retry_failed(self, task_id: str, *, snapshot: QuerySnapshot) -> TaskState:  # pragma: no cover
+        ...
+
+    def reorganize(self, snapshot: QuerySnapshot, frozen) -> ReorganizeReport:  # pragma: no cover
+        ...
+
+    def cleanup_duplicate_untracked(self) -> CleanupReport:  # pragma: no cover
         ...
 
 
@@ -497,6 +509,49 @@ class AppController:
             return None
         try:
             return self._task_service.retry_failed(self.task_id, snapshot=self.snapshot)
+        except TaskServiceError as exc:
+            self.last_error = str(exc)
+            return None
+
+    def is_task_active(self) -> bool:
+        state = self.progress()
+        return state is not None and state.status.is_active
+
+    def reorganize(self) -> ReorganizeReport | None:
+        """依目前模式搬移已下載檔案，不重新下載。"""
+        self.last_error = None
+        if not self.task_service_compatible():
+            self.last_error = RESTART_REQUIRED_MESSAGE
+            return None
+        if self.snapshot is None or self.state is None:
+            self.last_error = "請先完成查詢"
+            return None
+        if not self.snapshot.is_complete:
+            self.last_error = f"快照未完整（{self.snapshot.message}），請重新查詢"
+            return None
+        records = self.selected_records()
+        if not records:
+            self.last_error = "沒有選取任何紀錄，無法整理目錄"
+            return None
+        try:
+            frozen = freeze_selection(records, snapshot_id=self.snapshot.snapshot_id)
+            report = self._task_service.reorganize(self.snapshot, frozen)
+            if report.moved:
+                # 舊任務保存的是搬移前的路徑，整理後不可再用來匯出。
+                self.task_id = None
+            return report
+        except (SnapshotIncompleteError, TaskServiceError, SelectionError, PathBuildError) as exc:
+            self.last_error = f"無法整理目錄：{exc}"
+            return None
+
+    def cleanup_duplicates(self) -> CleanupReport | None:
+        """刪除內容與已追蹤檔案相同、但已不再被追蹤的舊 PDF。"""
+        self.last_error = None
+        if not self.task_service_compatible():
+            self.last_error = RESTART_REQUIRED_MESSAGE
+            return None
+        try:
+            return self._task_service.cleanup_duplicate_untracked()
         except TaskServiceError as exc:
             self.last_error = str(exc)
             return None

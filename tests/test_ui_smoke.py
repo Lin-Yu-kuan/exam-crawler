@@ -86,7 +86,21 @@ def test_download_progress_separates_new_and_skipped() -> None:
 
     assert "新下載 {state.completed - state.deduped}" in source
     assert "共用 {state.deduped}" in source
-    assert "略過 {state.skipped}" in source
+    assert "略過 {max(0, state.skipped - state.relocated)}" in source
+    assert "搬移 {state.relocated}" in source
+
+
+def test_directory_reorganize_controls_exist() -> None:
+    """模式變更後要能一鍵搬移既有檔案，且下載中鎖定設定。"""
+    source = (ROOT / "app" / "ui" / "web_app.py").read_text(encoding="utf-8")
+
+    assert "依目前模式整理已下載檔案" in source
+    assert "清理重複舊檔" in source
+    assert "搬到新結構，不會重新下載" in source
+    assert "搬移 {state.relocated}" in source
+    assert "disabled=task_active" in source
+    assert "controller.reorganize()" in source
+    assert "controller.cleanup_duplicates()" in source
 
 
 def test_entry_point_uses_localhost() -> None:

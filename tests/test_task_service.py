@@ -57,6 +57,8 @@ class FakeDownloader:
         self.calls: list[str] = []
         self.paths: dict[str, str] = {}
         self.shared: dict[str, str] = {}
+        self.relocates: list[tuple[str, str]] = []
+        self.cleanup_calls: list[str] = []
         self.active = 0
         self.peak = 0
         self._lock = threading.Lock()
@@ -90,6 +92,23 @@ class FakeDownloader:
                 error_message=result.error_message or "",
                 status=result.status,
             )
+
+    def relocate(
+        self, target: DownloadTarget, *, desired_relative: str | None = None
+    ) -> DownloadResult:
+        desired = desired_relative or target.relative_path
+        self.relocates.append((target.asset.asset_id, desired))
+        return DownloadResult(
+            asset_id=target.asset.asset_id,
+            status=AttachmentStatus.SKIPPED,
+            relative_path=desired,
+            skipped=True,
+            relocated=True,
+        )
+
+    def cleanup_untracked_duplicates(self, relative_paths) -> tuple[str, ...]:
+        self.cleanup_calls = list(relative_paths)
+        return tuple(relative_paths[:1])
 
     def download(self, target: DownloadTarget, *, should_cancel=None, force: bool = False) -> DownloadResult:
         asset_id = target.asset.asset_id
@@ -553,3 +572,65 @@ def test_state_listener_receives_progress(tmp_path, store, records) -> None:
 
     assert TaskStatus.DOWNLOADING in seen
     assert seen[-1] is TaskStatus.COMPLETED
+
+
+def test_reorganize_uses_stored_question_types(tmp_path, store, records) -> None:
+    snapshot = make_snapshot(records)
+    frozen = freeze_selection(records, snapshot_id=snapshot.snapshot_id)
+    downloader = FakeDownloader(store=store)
+    service = make_service(tmp_path, store, downloader)
+    for record in records:
+        for asset in record.assets:
+            store.mark_attachment_started(
+                asset_id=asset.asset_id,
+                snapshot_id=snapshot.snapshot_id,
+                record_id=record.record_id,
+                url=asset.url,
+                role=asset.role.value,
+            )
+            store.complete_attachment(
+                asset_id=asset.asset_id,
+                path=f"old/{asset.asset_id}.pdf",
+                sha256="0" * 64,
+                size=1,
+                version=1,
+                question_type=QuestionType.CHOICE.value,
+            )
+
+    report = service.reorganize(snapshot, frozen)
+
+    assert report.moved == len(downloader.relocates) == 4
+    assert report.failed == 0
+    for _, desired in downloader.relocates:
+        assert "測驗試題" in desired or "測驗答案" in desired
+
+
+def test_reorganize_rejects_active_task(tmp_path, store, records) -> None:
+    snapshot = make_snapshot(records)
+    frozen = freeze_selection(records, snapshot_id=snapshot.snapshot_id)
+    gate = threading.Event()
+    downloader = FakeDownloader(store=store, gate=gate)
+    service = make_service(tmp_path, store, downloader)
+
+    state = service.submit(snapshot, frozen)
+    try:
+        with pytest.raises(TaskStateError, match="執行中"):
+            service.reorganize(snapshot, frozen)
+    finally:
+        gate.set()
+    service.wait(state.task_id)
+
+
+def test_cleanup_duplicate_untracked_reports_kept(tmp_path, store) -> None:
+    root = tmp_path / "downloads"
+    root.mkdir()
+    (root / "dup.pdf").write_bytes(b"dup")
+    (root / "other.pdf").write_bytes(b"other")
+    downloader = FakeDownloader(store=store)
+    service = make_service(tmp_path, store, downloader)
+
+    report = service.cleanup_duplicate_untracked()
+
+    assert report.removed == ("dup.pdf",)
+    assert report.kept == ("other.pdf",)
+    assert downloader.cleanup_calls == ["dup.pdf", "other.pdf"]

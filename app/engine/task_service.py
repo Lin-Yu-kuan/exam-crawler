@@ -35,6 +35,7 @@ from app.models import (
     ExamRecord,
     PdfInspection,
     QuerySnapshot,
+    QuestionType,
     TaskStatus,
 )
 from app.storage.manifest import ManifestStore
@@ -74,6 +75,16 @@ class DownloaderProtocol(Protocol):
     ) -> DownloadResult:
         ...
 
+    def relocate(  # pragma: no cover - 介面
+        self, target: DownloadTarget, *, desired_relative: str | None = None
+    ) -> DownloadResult:
+        ...
+
+    def cleanup_untracked_duplicates(  # pragma: no cover - 介面
+        self, relative_paths: tuple[str, ...] | list[str]
+    ) -> tuple[str, ...]:
+        ...
+
 
 @dataclass(frozen=True)
 class TaskEvent:
@@ -105,6 +116,7 @@ class TaskState:
     events: tuple[TaskEvent, ...] = ()
     failures: tuple[tuple[str, str, str], ...] = ()
     unsupported: tuple[tuple[str, str], ...] = ()
+    relocated: int = 0
 
     @property
     def done(self) -> int:
@@ -117,12 +129,17 @@ class TaskState:
     @property
     def message(self) -> str:
         if self.status is TaskStatus.COMPLETED:
-            if self.skipped or self.deduped:
+            if self.skipped or self.deduped or self.relocated:
                 extras: list[str] = []
                 if self.deduped:
                     extras.append(f"{self.deduped} 個與既有檔案內容相同（共用檔案）")
                 if self.skipped:
-                    extras.append(f"略過 {self.skipped} 個已存在檔案")
+                    text = f"略過 {self.skipped} 個已存在檔案"
+                    if self.relocated:
+                        text += f"（其中 {self.relocated} 個已搬移到目前歸檔結構）"
+                    extras.append(text)
+                elif self.relocated:
+                    extras.append(f"搬移 {self.relocated} 個既有檔案")
                 return f"全部完成（{self.done}/{self.total}，其中 {'、'.join(extras)}）"
             return f"全部完成（{self.done}/{self.total}）"
         if self.status is TaskStatus.PARTIAL:
@@ -132,6 +149,25 @@ class TaskState:
         if self.status is TaskStatus.FAILED:
             return f"下載失敗（{self.failed} 個附件）"
         return f"{self.status.value}（{self.done}/{self.total}）"
+
+
+@dataclass(frozen=True)
+class ReorganizeReport:
+    """依目前歸檔模式搬移既有檔案的結果。"""
+
+    moved: int = 0
+    unchanged: int = 0
+    shared: int = 0
+    failed: int = 0
+    errors: tuple[tuple[str, str], ...] = ()
+
+
+@dataclass(frozen=True)
+class CleanupReport:
+    """清理重複未追蹤 PDF 的結果。"""
+
+    removed: tuple[str, ...] = ()
+    kept: tuple[str, ...] = ()
 
 
 def _now_iso() -> str:
@@ -156,6 +192,7 @@ class _Task:
     completed: int = 0
     skipped: int = 0
     deduped: int = 0
+    relocated: int = 0
     failed: int = 0
     cancelled: int = 0
     events: list[TaskEvent] = field(default_factory=list)
@@ -188,6 +225,7 @@ class _Task:
             events=tuple(self.events),
             failures=tuple(self.failures),
             unsupported=tuple(self.unsupported),
+            relocated=self.relocated,
         )
 
 
@@ -195,7 +233,7 @@ class TaskService:
     """任務建立、取消與重試；狀態轉移一律在鎖內完成。"""
 
     # 介面或任務記憶體結構不相容時遞增；舊實例須由程序重啟淘汰。
-    api_version = 1
+    api_version = 2
 
     def __init__(
         self,
@@ -304,6 +342,7 @@ class TaskService:
             task.cancel_requested = False
             task.completed = task.skipped = task.failed = task.cancelled = 0
             task.deduped = 0
+            task.relocated = 0
             task.failures.clear()
             task.finished_at = None
             task.reserved = {
@@ -324,6 +363,105 @@ class TaskService:
             thread.start()
         self._notify(state)
         return state
+
+    def reorganize(
+        self, snapshot: QuerySnapshot, frozen: FrozenSelection
+    ) -> ReorganizeReport:
+        """依目前模式搬移已完成的檔案；不重新下載、不重新嗅探 PDF。"""
+        if not snapshot.is_complete:
+            raise SnapshotIncompleteError(
+                f"快照未完整（{snapshot.message}），請重新查詢後再整理"
+            )
+        records = resolve_frozen(snapshot.records, frozen)
+        if not records:
+            raise TaskServiceError("沒有可整理的附件")
+        self._ensure_idle()
+
+        # asset_id 跨快照穩定；不可只找本次 snapshot，否則快取過期後會漏掉既有檔案。
+        rows = {row.asset_id: row for row in self._store.list_attachments()}
+        asset_types: dict[str, QuestionType] = {}
+        for record in records:
+            for asset in record.assets:
+                row = rows.get(asset.asset_id)
+                if row is None or row.status not in (
+                    AttachmentStatus.COMPLETED,
+                    AttachmentStatus.SKIPPED,
+                ):
+                    continue
+                if row.question_type:
+                    try:
+                        asset_types[asset.asset_id] = QuestionType(row.question_type)
+                        continue
+                    except ValueError:
+                        pass
+                # 舊資料可能沒有 question_type；沿用檔名既有的題型詞，避免降級成「試題」。
+                if row.path:
+                    stem = row.path.rsplit("/", 1)[-1][:-4]
+                    for question_type, token in FILENAME_TYPE_TOKENS.items():
+                        if stem.endswith(token):
+                            asset_types[asset.asset_id] = question_type
+                            break
+
+        plan = build_plan(
+            self._root,
+            records,
+            mode=self._mode,
+            template=self._template,
+            asset_types=asset_types,
+        )
+        planned = {item.asset_id: item.relative_path for item in plan.files}
+        pairs = {
+            asset.asset_id: (record, asset)
+            for record in records
+            for asset in record.assets
+        }
+        moved = unchanged = shared = failed = 0
+        errors: list[tuple[str, str]] = []
+        for asset_id, desired in planned.items():
+            pair = pairs.get(asset_id)
+            row = rows.get(asset_id)
+            if (
+                pair is None
+                or row is None
+                or row.status not in (AttachmentStatus.COMPLETED, AttachmentStatus.SKIPPED)
+            ):
+                continue
+            record, asset = pair
+            target = DownloadTarget(record=record, asset=asset, relative_path=desired)
+            result = self._downloader.relocate(target, desired_relative=desired)
+            if result.relocated:
+                moved += 1
+            elif result.status is AttachmentStatus.SKIPPED:
+                if result.relative_path == desired:
+                    unchanged += 1
+                else:
+                    shared += 1
+            else:
+                failed += 1
+                errors.append(
+                    (asset_id, result.error_message or result.error_code or "整理失敗")
+                )
+        return ReorganizeReport(
+            moved=moved,
+            unchanged=unchanged,
+            shared=shared,
+            failed=failed,
+            errors=tuple(errors),
+        )
+
+    def cleanup_duplicate_untracked(self) -> CleanupReport:
+        """刪除內容與已追蹤檔案相同、但已不再被追蹤的舊 PDF。"""
+        self._ensure_idle()
+        untracked = self._store.list_untracked_pdfs(self._root)
+        removed = self._downloader.cleanup_untracked_duplicates(untracked)
+        removed_set = set(removed)
+        kept = tuple(path for path in untracked if path not in removed_set)
+        return CleanupReport(removed=removed, kept=kept)
+
+    def _ensure_idle(self) -> None:
+        with self._lock:
+            if any(task.status.is_active for task in self._tasks.values()):
+                raise TaskStateError("下載任務執行中，無法整理目錄")
 
     def get(self, task_id: str) -> TaskState:
         with self._lock:
@@ -508,6 +646,8 @@ class TaskService:
                 task.successful_results[result.asset_id] = result
             if result.skipped or result.status is AttachmentStatus.SKIPPED:
                 task.skipped += 1
+                if result.relocated:
+                    task.relocated += 1
             elif result.status is AttachmentStatus.COMPLETED:
                 task.completed += 1
                 if result.shared:
@@ -526,6 +666,7 @@ class TaskService:
                     message=(
                         f"{result.status.value}：{result.relative_path or result.error_message or ''}"
                         f"{'（內容相同，共用檔案）' if result.shared else ''}"
+                        f"{'（已搬移到目前歸檔結構）' if result.relocated else ''}"
                     ),
                     asset_id=result.asset_id,
                 )

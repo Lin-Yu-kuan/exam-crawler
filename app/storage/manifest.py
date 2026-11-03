@@ -397,6 +397,56 @@ class ManifestStore:
             rows = conn.execute(query, params).fetchall()
         return tuple(_attachment_from_row(row) for row in rows)
 
+    def list_attachments_at_path(
+        self, path: str, *, exclude_asset_id: str | None = None
+    ) -> tuple[AttachmentRow, ...]:
+        """找出仍指向同一實體路徑的附件（判斷是否為共用檔）。"""
+        query = "SELECT * FROM attachments WHERE path = ?"
+        params: list[str] = [path]
+        if exclude_asset_id is not None:
+            query += " AND asset_id <> ?"
+            params.append(exclude_asset_id)
+        query += " ORDER BY asset_id"
+        with self._connection() as conn:
+            rows = conn.execute(query, params).fetchall()
+        return tuple(_attachment_from_row(row) for row in rows)
+
+    def relocate_attachments(
+        self, *, old_path: str, new_path: str, sha256: str | None = None
+    ) -> int:
+        """搬移實體檔後，同步所有指向舊路徑的附件與目前版本紀錄。"""
+        if old_path == new_path:
+            return 0
+        timestamp = _now_iso()
+        condition = "path = ?"
+        params: list[str] = [old_path]
+        if sha256:
+            condition += " AND sha256 = ?"
+            params.append(sha256)
+        with self._connection() as conn:
+            rows = conn.execute(
+                f"SELECT asset_id, version FROM attachments WHERE {condition}", params
+            ).fetchall()
+            if not rows:
+                return 0
+            conn.execute("BEGIN")
+            try:
+                conn.execute(
+                    f"UPDATE attachments SET path = ?, updated_at = ? WHERE {condition}",
+                    (new_path, timestamp, *params),
+                )
+                for row in rows:
+                    conn.execute(
+                        "UPDATE attachment_versions SET path = ?"
+                        " WHERE asset_id = ? AND version = ?",
+                        (new_path, row["asset_id"], row["version"]),
+                    )
+                conn.execute("COMMIT")
+            except Exception:
+                conn.execute("ROLLBACK")
+                raise
+        return len(rows)
+
     def find_content_duplicate(
         self, *, sha256: str, exclude_asset_id: str
     ) -> AttachmentRow | None:
@@ -538,6 +588,21 @@ class ManifestStore:
             ).fetchall()
         return tuple(dict(row) for row in rows)
 
+    def list_untracked_pdfs(self, root: str | Path) -> tuple[str, ...]:
+        """列出根目錄下未列入 manifest 的 PDF；唯讀、不刪除任何檔案。"""
+        base = Path(root)
+        tracked = {
+            str((base / row.path).resolve()).casefold()
+            for row in self.list_attachments()
+            if row.path
+        }
+        untracked: list[str] = []
+        if base.is_dir():
+            for candidate in base.rglob("*.pdf"):
+                if str(candidate.resolve()).casefold() not in tracked:
+                    untracked.append(str(candidate.relative_to(base)).replace("\\", "/"))
+        return tuple(sorted(untracked))
+
     def reconcile(self, root: str | Path) -> ReconcileReport:
         """啟動核對：修復歸檔成功但狀態未提交、清理殘留暫存檔。"""
         base = Path(root)
@@ -579,22 +644,11 @@ class ManifestStore:
                 except OSError:
                     pass
 
-        tracked = {
-            str((base / row.path).resolve()).casefold()
-            for row in self.list_attachments()
-            if row.path
-        }
-        untracked: list[str] = []
-        if base.is_dir():
-            for candidate in base.rglob("*.pdf"):
-                if str(candidate.resolve()).casefold() not in tracked:
-                    untracked.append(str(candidate.relative_to(base)).replace("\\", "/"))
-
         return ReconcileReport(
             adopted=tuple(adopted),
             interrupted=tuple(interrupted),
             removed_parts=tuple(removed_parts),
-            untracked_pdfs=tuple(sorted(untracked)),
+            untracked_pdfs=self.list_untracked_pdfs(base),
         )
 
 

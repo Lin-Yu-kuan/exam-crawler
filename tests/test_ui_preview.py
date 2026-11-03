@@ -189,10 +189,15 @@ def test_downloader_relinks_to_new_mode_path_when_mode_changes(tmp_path: pathlib
     downloader = Downloader(root=str(root), store=store)
     result = downloader.download(target)
 
-    # 驗證回傳的相對路徑已是新路徑，且檔案已出現在新目錄下
+    # 驗證回傳的相對路徑已是新路徑，且檔案已搬到新目錄下
     assert result.relative_path == new_rel
+    assert result.relocated is True
+    assert result.skipped is True
     assert (root / "113" / "高考三級_資訊處理" / "資料結構_申論試題.pdf").is_file()
     assert (root / "113" / "高考三級_資訊處理" / "資料結構_申論試題.pdf").read_bytes() == pdf_content
+    # 舊檔與舊空資料夾必須移除，不能留下新舊兩份
+    assert not old_file.exists()
+    assert not old_file.parent.exists()
     # manifest 記錄也同步更新至新路徑
     row = store.get_attachment(asset_id)
     assert row is not None

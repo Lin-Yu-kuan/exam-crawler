@@ -163,8 +163,8 @@ def build_controller(
     )
 
 
-EXPECTED_CONTROLLER_API_VERSION = 5
-EXPECTED_TASK_SERVICE_API_VERSION = 1
+EXPECTED_CONTROLLER_API_VERSION = 6
+EXPECTED_TASK_SERVICE_API_VERSION = 2
 RESTART_REQUIRED_MESSAGE = "程式已更新，請重新啟動應用程式後重新查詢及下載"
 
 
@@ -251,30 +251,53 @@ def _sidebar() -> tuple[dict, bool]:
         st.caption("設定一次，專心挑選需要的試題。")
         if "download_root" not in st.session_state:
             st.session_state["download_root"] = DEFAULT_ROOT
-        
+
+        cached = st.session_state.get("controller")
+        task_active = False
+        if cached is not None:
+            check_active = getattr(cached, "is_task_active", None)
+            if callable(check_active):
+                try:
+                    task_active = bool(check_active())
+                except Exception:
+                    task_active = False
+        if task_active:
+            st.warning("下載進行中，歸檔設定暫時鎖定；完成或取消後即可變更。")
+
         cloud_mode = is_cloud_env()
         if cloud_mode:
             root = st.session_state["download_root"]
             st.info("☁️ 雲端模式：完成後可直接一鍵下載分類打包的 ZIP 題庫包。")
         else:
-            root = st.text_input("下載根目錄", key="download_root")
+            root = st.text_input("下載根目錄", key="download_root", disabled=task_active)
             st.button(
                 "📂 選擇目錄…",
                 on_click=_on_pick_directory,
                 width="stretch",
                 key="pick-dir-btn",
+                disabled=task_active,
             )
             st.caption("下載紀錄由程式自動保存，搬移題庫時請連同整個資料夾一起搬移。")
-        mode_label = st.selectbox("歸檔模式", list(MODE_LABELS))
+        mode_label = st.selectbox("歸檔模式", list(MODE_LABELS), disabled=task_active)
         mode = MODE_LABELS[mode_label]
         template = DEFAULT_TEMPLATES[mode.name]
+        st.caption(
+            "變更模式後按「開始下載」或「整理已下載檔案」，"
+            "既有檔案會搬到新結構，不會重新下載。"
+        )
         with st.container(border=True):
             st.caption("歸檔結構預覽")
             st.code(build_tree_preview(root, template), language="text")
 
         db_path = str(resolve_manifest_path(root))
         with st.expander("進階設定"):
-            workers = st.slider("下載併發數", MIN_WORKERS, MAX_WORKERS, DEFAULT_WORKERS)
+            workers = st.slider(
+                "下載併發數",
+                MIN_WORKERS,
+                MAX_WORKERS,
+                DEFAULT_WORKERS,
+                disabled=task_active,
+            )
             auto_refresh = st.checkbox("下載時自動更新進度", value=True)
         st.caption("本工具只在本機執行；查詢與下載需要網路。")
     return (
@@ -303,6 +326,12 @@ def _render_reconcile(controller: AppController) -> None:
             f"發現 {len(report.untracked_pdfs)} 個未追蹤的 PDF（不會自動採用或覆寫）："
             + "、".join(report.untracked_pdfs[:3])
         )
+        with st.expander(f"未追蹤的 PDF（{len(report.untracked_pdfs)} 個）"):
+            st.caption(
+                "可能是舊歸檔模式留下的檔案；「清理重複舊檔」只會刪除內容與已追蹤檔案完全相同者。"
+            )
+            for relative in report.untracked_pdfs[:50]:
+                st.text(relative)
 
 
 def _format_spec_label(spec: QuerySpec) -> str:
@@ -554,6 +583,48 @@ def _render_task(controller: AppController, auto_refresh: bool, root: str = DEFA
         else:
             st.caption("💡 目前未選取任何考科，請在上方勾選欲下載的科目。")
 
+    with st.expander("🔁 目錄結構整理", expanded=False):
+        st.caption(
+            "變更歸檔模式後，已下載且完好的檔案會搬到新結構，不會重新下載；"
+            "舊的空資料夾會自動清除。共用檔案由擁有者搬移並保留一份。"
+        )
+        task_active = controller.is_task_active()
+        action_cols = st.columns(2)
+        if action_cols[0].button(
+            "🔁 依目前模式整理已下載檔案",
+            disabled=task_active,
+            width="stretch",
+        ):
+            with st.spinner("正在搬移既有檔案…"):
+                report = controller.reorganize()
+            if controller.last_error:
+                st.error(controller.last_error)
+            elif report is not None:
+                st.success(
+                    f"整理完成：搬移 {report.moved}、未變更 {report.unchanged}、"
+                    f"共用保留 {report.shared}、失敗 {report.failed}"
+                )
+                for asset_id, message in report.errors[:20]:
+                    st.text(f"{asset_id}｜{message}")
+        confirm_cleanup = action_cols[1].checkbox(
+            "我確認清理內容重複的舊 PDF", key="cleanup-confirm"
+        )
+        if action_cols[1].button(
+            "🧹 清理重複舊檔",
+            disabled=task_active or not confirm_cleanup,
+            width="stretch",
+        ):
+            with st.spinner("正在比對並清理重複檔案…"):
+                report = controller.cleanup_duplicates()
+            if controller.last_error:
+                st.error(controller.last_error)
+            elif report is not None:
+                st.success(f"已刪除 {len(report.removed)} 個重複舊檔")
+                if report.kept:
+                    st.caption(
+                        f"保留 {len(report.kept)} 個內容不同或無法確認的未追蹤 PDF"
+                    )
+
     state = controller.progress()
     if state is None:
         return
@@ -578,7 +649,8 @@ def _render_task(controller: AppController, auto_refresh: bool, root: str = DEFA
         controller.retry()
         st.rerun()
     cols[2].caption(
-        f"新下載 {state.completed - state.deduped}／共用 {state.deduped}／略過 {state.skipped}"
+        f"新下載 {state.completed - state.deduped}／共用 {state.deduped}"
+        f"／略過 {max(0, state.skipped - state.relocated)}／搬移 {state.relocated}"
         f"／失敗 {state.failed}／取消 {state.cancelled}"
     )
 

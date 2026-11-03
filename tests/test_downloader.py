@@ -422,3 +422,176 @@ def test_reconcile_reports_untracked_pdf(tmp_path, store) -> None:
     report = store.reconcile(root)
 
     assert report.untracked_pdfs == ("手動放的/陌生檔案.pdf",)
+
+
+def seed_completed(
+    store: ManifestStore,
+    root: pathlib.Path,
+    *,
+    asset_id: str,
+    relative: str,
+    content: bytes,
+    version: int = 1,
+    dedupe_of: str | None = None,
+) -> str:
+    """建立已完成附件與實體檔，供搬移測試使用。"""
+    digest = hashlib.sha256(content).hexdigest()
+    store.mark_attachment_started(
+        asset_id=asset_id, snapshot_id="s1", record_id="r1", url=URL, role="試題"
+    )
+    store.begin_attachment_verify(
+        asset_id=asset_id, path=relative, sha256=digest, size=len(content), version=version
+    )
+    store.complete_attachment(
+        asset_id=asset_id,
+        path=relative,
+        sha256=digest,
+        size=len(content),
+        version=version,
+        question_type="測驗題",
+        dedupe_of=dedupe_of,
+    )
+    path = root / relative
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(content)
+    return digest
+
+
+def relocate_target(asset_id: str, desired: str) -> DownloadTarget:
+    base = make_target(asset_id, desired)
+    return DownloadTarget(
+        record=base.record,
+        asset=base.asset,
+        relative_path=desired,
+        resolve_path=lambda inspection: desired,
+    )
+
+
+def test_relocate_moves_file_and_removes_empty_old_dirs(tmp_path, store, sample_pdf) -> None:
+    root = tmp_path / "downloads"
+    old_rel = "科目/檔_試題.pdf"
+    seed_completed(store, root, asset_id="a1", relative=old_rel, content=sample_pdf)
+    server = Server([pdf_response(sample_pdf)])
+    downloader = make_downloader(tmp_path, store, server)
+
+    new_rel = "113年/考試_類科/檔_試題.pdf"
+    result = downloader.download(relocate_target("a1", new_rel))
+
+    assert result.relocated is True
+    assert result.skipped is True
+    assert result.relative_path == new_rel
+    assert (root / new_rel).read_bytes() == sample_pdf
+    assert not (root / old_rel).exists()
+    assert not (root / "科目").exists()
+    assert store.get_attachment("a1").path == new_rel
+    assert store.attachment_versions("a1")[-1]["path"] == new_rel
+    assert server.requests == []
+
+
+def test_relocate_collision_does_not_overwrite_different_content(
+    tmp_path, store, sample_pdf, other_pdf
+) -> None:
+    root = tmp_path / "downloads"
+    old_rel = "A/檔_試題.pdf"
+    new_rel = "B/檔_試題.pdf"
+    seed_completed(store, root, asset_id="a1", relative=old_rel, content=sample_pdf)
+    (root / new_rel).parent.mkdir(parents=True)
+    (root / new_rel).write_bytes(other_pdf)
+    downloader = make_downloader(tmp_path, store, Server([pdf_response(sample_pdf)]))
+
+    result = downloader.download(relocate_target("a1", new_rel))
+
+    assert result.relocated is True
+    assert result.relative_path != new_rel
+    assert hashlib.sha256(sample_pdf).hexdigest()[:8] in result.relative_path
+    assert (root / new_rel).read_bytes() == other_pdf
+    assert not (root / old_rel).exists()
+    assert store.get_attachment("a1").path == result.relative_path
+
+
+def test_relocate_preserves_version_hash(tmp_path, store, sample_pdf) -> None:
+    root = tmp_path / "downloads"
+    old_rel = "A/檔_試題.pdf"
+    seed_completed(
+        store, root, asset_id="a1", relative=old_rel, content=sample_pdf, version=2
+    )
+    downloader = make_downloader(tmp_path, store, Server([pdf_response(sample_pdf)]))
+
+    new_rel = "B/檔_試題.pdf"
+    result = downloader.download(relocate_target("a1", new_rel))
+
+    assert result.relocated is True
+    assert hashlib.sha256(sample_pdf).hexdigest()[:8] in result.relative_path
+    assert not (root / old_rel).exists()
+
+
+def test_relocate_only_owner_moves_shared_file(tmp_path, store, sample_pdf) -> None:
+    root = tmp_path / "downloads"
+    old_rel = "A/shared.pdf"
+    digest = seed_completed(
+        store, root, asset_id="a1", relative=old_rel, content=sample_pdf
+    )
+    seed_completed(
+        store,
+        root,
+        asset_id="a2",
+        relative=old_rel,
+        content=sample_pdf,
+        dedupe_of="a1",
+    )
+    downloader = make_downloader(tmp_path, store, Server([pdf_response(sample_pdf)]))
+
+    non_owner = downloader.download(relocate_target("a2", "B/a2.pdf"))
+    assert non_owner.skipped is True
+    assert non_owner.relocated is False
+    assert (root / old_rel).exists()
+
+    owner = downloader.download(relocate_target("a1", "C/a1.pdf"))
+    assert owner.relocated is True
+    assert not (root / old_rel).exists()
+    assert (root / "C/a1.pdf").exists()
+    assert store.get_attachment("a1").path == "C/a1.pdf"
+    assert store.get_attachment("a2").path == "C/a1.pdf"
+    assert store.get_attachment("a2").sha256 == digest
+
+
+def test_cleanup_untracked_duplicates_removes_only_identical(
+    tmp_path, store, sample_pdf, other_pdf
+) -> None:
+    root = tmp_path / "downloads"
+    seed_completed(store, root, asset_id="a1", relative="A/keep.pdf", content=sample_pdf)
+    duplicate = root / "Dup" / "dup.pdf"
+    different = root / "Other" / "other.pdf"
+    duplicate.parent.mkdir(parents=True)
+    different.parent.mkdir(parents=True)
+    duplicate.write_bytes(sample_pdf)
+    different.write_bytes(other_pdf)
+    downloader = make_downloader(tmp_path, store, Server([pdf_response(sample_pdf)]))
+
+    untracked = store.list_untracked_pdfs(root)
+    removed = downloader.cleanup_untracked_duplicates(untracked)
+
+    assert removed == ("Dup/dup.pdf",)
+    assert not duplicate.exists()
+    assert not duplicate.parent.exists()
+    assert different.is_file()
+    assert store.list_untracked_pdfs(root) == ("Other/other.pdf",)
+
+
+def test_cleanup_keeps_duplicate_when_tracked_copy_is_missing(
+    tmp_path, store, sample_pdf
+) -> None:
+    root = tmp_path / "downloads"
+    seed_completed(store, root, asset_id="a1", relative="A/lost.pdf", content=sample_pdf)
+    (root / "A/lost.pdf").unlink()
+    duplicate = root / "Dup" / "dup.pdf"
+    duplicate.parent.mkdir(parents=True)
+    duplicate.write_bytes(sample_pdf)
+    downloader = make_downloader(tmp_path, store, Server([pdf_response(sample_pdf)]))
+
+    removed = downloader.cleanup_untracked_duplicates(
+        store.list_untracked_pdfs(root)
+    )
+
+    assert removed == ()
+    assert duplicate.is_file()
