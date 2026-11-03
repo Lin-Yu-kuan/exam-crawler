@@ -49,6 +49,24 @@ DEFAULT_LOCAL_ROOT = r"C:\國考題庫"
 DEFAULT_CLOUD_ROOT = str(Path(tempfile.gettempdir()) / "moex_exam_bank")
 DEFAULT_ROOT = DEFAULT_CLOUD_ROOT if is_cloud_env() else DEFAULT_LOCAL_ROOT
 SYSTEM_DIR_NAME = "_系統資料"
+CLOUD_ROOT_PREFIX = "國考題庫"
+
+
+def cloud_root_name(stamp: str | None = None) -> str:
+    """雲端題庫根目錄名稱：國考題庫_YYYYMMDD_HHMM。"""
+    return f"{CLOUD_ROOT_PREFIX}_{stamp or time.strftime('%Y%m%d_%H%M')}"
+
+
+def new_cloud_root() -> str:
+    """每次工作階段使用專屬暫存根目錄，避免不同使用者的題庫與下載紀錄互相混用。"""
+    return str(Path(tempfile.gettempdir()) / cloud_root_name())
+
+
+def zip_file_name(root: str, task_id: str) -> str:
+    """雲端 ZIP 與根目錄同名（國考題庫_YYYYMMDD_HHMM.zip）；本機保留任務識別。"""
+    if is_cloud_env():
+        return f"{Path(root).name}.zip"
+    return f"國考題庫_{task_id}_{time.strftime('%Y%m%d_%H%M%S')}.zip"
 
 
 def pick_directory_dialog(initial_dir: str) -> str | None:
@@ -255,8 +273,9 @@ def _sidebar() -> tuple[dict, bool]:
     with st.sidebar:
         st.subheader("題庫歸檔")
         st.caption("設定一次，專心挑選需要的試題。")
+        cloud_mode = is_cloud_env()
         if "download_root" not in st.session_state:
-            st.session_state["download_root"] = DEFAULT_ROOT
+            st.session_state["download_root"] = new_cloud_root() if cloud_mode else DEFAULT_ROOT
 
         cached = st.session_state.get("controller")
         task_active = False
@@ -270,10 +289,12 @@ def _sidebar() -> tuple[dict, bool]:
         if task_active:
             st.warning("下載進行中，歸檔設定暫時鎖定；完成或取消後即可變更。")
 
-        cloud_mode = is_cloud_env()
         if cloud_mode:
             root = st.session_state["download_root"]
-            st.info("☁️ 雲端模式：完成後可直接一鍵下載分類打包的 ZIP 題庫包。")
+            st.info(
+                "☁️ 雲端模式：完成後可直接一鍵下載分類打包的 ZIP 題庫包；"
+                f"ZIP 檔名為 `{Path(root).name}.zip`。"
+            )
         else:
             root = st.text_input("下載根目錄", key="download_root", disabled=task_active)
             st.button(
@@ -719,7 +740,7 @@ def _render_task(controller: AppController, auto_refresh: bool, root: str = DEFA
             st.download_button(
                 label="📦 下載本次任務題庫包 (ZIP 壓縮檔)",
                 data=zip_bytes,
-                file_name=f"國考題庫_{state.task_id}_{time.strftime('%Y%m%d_%H%M%S')}.zip",
+                file_name=zip_file_name(actual_root, state.task_id),
                 mime="application/zip",
                 type="primary",
                 width="stretch",

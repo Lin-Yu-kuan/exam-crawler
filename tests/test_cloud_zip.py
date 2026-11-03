@@ -1,6 +1,7 @@
 import io
 import os
 import pathlib
+import re
 import subprocess
 import sys
 import zipfile
@@ -74,6 +75,30 @@ def test_zip_creation_shortens_ultra_long_path(tmp_path: pathlib.Path) -> None:
         """
         r = subprocess.run(["powershell", "-NoProfile", "-Command", ps_script], capture_output=True)
         assert r.returncode == 0, f"Windows Shell.Application failed: {r.stderr.decode('utf-8', errors='ignore')}"
+
+def test_cloud_root_name_uses_timestamp() -> None:
+    assert web_app.cloud_root_name("20261103_2125") == "國考題庫_20261103_2125"
+    assert re.fullmatch(r"國考題庫_\d{8}_\d{4}", web_app.cloud_root_name())
+
+
+def test_new_cloud_root_is_timestamped_temp_dir(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(web_app.tempfile, "tempdir", str(tmp_path))
+    root = pathlib.Path(web_app.new_cloud_root())
+    assert root.parent == tmp_path
+    assert re.fullmatch(r"國考題庫_\d{8}_\d{4}", root.name)
+
+
+def test_cloud_zip_name_matches_root_folder(monkeypatch) -> None:
+    monkeypatch.setattr(web_app, "is_cloud_env", lambda: True)
+    root = str(pathlib.Path("/tmp") / "國考題庫_20261103_2125")
+    assert web_app.zip_file_name(root, "task-abc") == "國考題庫_20261103_2125.zip"
+
+
+def test_local_zip_name_keeps_task_id(monkeypatch) -> None:
+    monkeypatch.setattr(web_app, "is_cloud_env", lambda: False)
+    name = web_app.zip_file_name(r"C:\國考題庫", "task-abc")
+    assert re.fullmatch(r"國考題庫_task-abc_\d{8}_\d{6}\.zip", name)
+
 
 def test_button_label_depends_on_cloud(monkeypatch) -> None:
     monkeypatch.setenv("STREAMLIT_SHARING_HOST", "share.streamlit.io")

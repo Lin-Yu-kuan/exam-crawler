@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import pathlib
+import re
 import pytest
 
 from streamlit.testing.v1 import AppTest
@@ -22,6 +23,7 @@ from app.models import (
     TypeEvidence,
 )
 from app.storage.manifest import ManifestStore
+from app.ui import web_app
 from app.ui.web_app import MODE_LABELS, SAMPLE_VARS, build_tree_preview
 
 
@@ -45,6 +47,32 @@ def test_build_tree_preview_all_modes() -> None:
     preview_c = build_tree_preview(root, DEFAULT_TEMPLATES["C"])
     assert preview_c.count("📁") == 1  # 只有根目錄
     assert "113_高考三級考試_資訊處理_資料結構_申論試題.pdf" in preview_c
+
+
+def test_sidebar_cloud_root_uses_timestamped_folder(tmp_path, monkeypatch) -> None:
+    """雲端根目錄須為國考題庫_YYYYMMDD_HHMM，且歸檔結構預覽顯示同一路徑。"""
+    monkeypatch.setattr(web_app, "is_cloud_env", lambda: True)
+    monkeypatch.setattr(web_app.tempfile, "tempdir", str(tmp_path))
+    script = '''
+import re
+import streamlit as st
+from app.ui import web_app
+
+settings, _ = web_app._sidebar()
+st.session_state["root"] = settings["root"]
+st.session_state["preview"] = web_app.build_tree_preview(
+    settings["root"], web_app.DEFAULT_TEMPLATES["A"]
+)
+'''
+    app = AppTest.from_string(script, default_timeout=30)
+    app.run()
+    assert not app.exception
+
+    root = pathlib.Path(app.session_state["root"])
+    assert root.parent == tmp_path
+    assert re.fullmatch(r"國考題庫_\d{8}_\d{4}", root.name)
+    assert root.is_dir()
+    assert root.name in app.session_state["preview"]
 
 
 def test_sidebar_mode_labels_only_has_three_modes() -> None:
