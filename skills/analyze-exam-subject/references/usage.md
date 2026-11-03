@@ -1,23 +1,20 @@
-# 安裝與工具使用
+# 工具使用
 
-大量題庫預設採 [精簡考點分析](compact-analysis.md)，另有純標準函式庫的 `scripts/compact_analysis.py` 提供 prepare／packet／status／merge／summary。AI 不重複填寫來源欄位，統計與分析快取在本機處理；原有 inventory／extract／render 介面保持相容。
-
-## 安裝
-
-整個 `analyze-exam-subject` 資料夾可直接攜帶，不匯入爬蟲程式碼。從原始套件複製，保留 scripts 與 references 相對結構；不要只複製 SKILL.md。安裝前檢查目標是否已有同名版本，勿盲目覆寫。
-
-- Antigravity 專案範圍：`<專案>/.agents/skills/analyze-exam-subject/`。官方目前預設 `.agents/skills`，並相容舊 `.agent/skills`。參考 https://antigravity.google/docs/skills?app=antigravity-ide （2026-11-02 查核）。
-- Codex 個人範圍：`$CODEX_HOME/skills/analyze-exam-subject/`；未設定 CODEX_HOME 時使用 `~/.codex/skills/analyze-exam-subject/`。
-
-本套件不自動安裝或修改全域設定。安裝後依宿主方式重新載入技能，確認清單可見；也可明確要求宿主讀取 SKILL.md。兩個宿主的對話選取介面可能不同，文字路徑及編號選取是共同替代方式。
+本文件負責環境、盤點選取與文字擷取。命令以技能資料夾為目前目錄；範例路徑須替換為 run-dir 回傳的本次目錄。
 
 ## 環境
 
 Python 3.10+；盤點只用標準函式庫。PDF 擷取需要 pypdf。缺少時，先提示使用者在選定環境執行 `python -m pip install pypdf`，不靜默安裝。無 OCR 引擎或宿主視覺能力時，掃描頁只能回報待視覺檢查。所有命令中的路徑請加引號；以下以技能資料夾為目前目錄。完整依賴見 [`requirements.txt`](../requirements.txt)：`pypdf>=6,<7`、`pypdfium2>=5,<6`、`Pillow>=10.1`。
 
-逐頁圖片功能需要 `pypdfium2` 與 `Pillow`；缺少時提示 `python -m pip install pypdfium2 Pillow`，不自動安裝。圖片產生不需要視覺模型；判讀需要宿主實際提供圖片工具。無視覺時保留文字分析與待檢視圖片，不使用外部 OCR API。參閱 [視覺檢查及 render 指令](visual-review.md)。
+逐頁圖片功能需要 `pypdfium2` 與 `Pillow`；缺少時提示 `python -m pip install pypdfium2 Pillow`，不自動安裝。圖片產生不需要視覺模型；判讀需要宿主實際提供圖片工具。無視覺時保留文字分析與待檢視圖片，不使用外部 OCR API。參閱 [視覺檢查及 render 指令](visual-review.md#渲染)。
 
-## 執行目錄
+## 盤點與選取
+
+**進入條件**：使用者提供本機資料夾；未提供時請其選擇或給絕對路徑，不自行掃描。
+
+**輸入**：來源資料夾；manifest 非必需，只讀明確提供且受支援的檔案，使用前讀 [Manifest 邊界](#manifest-邊界)。
+
+**操作**：
 
 先建立唯一目錄，避免不同次分析互相覆寫；命令會印出實際路徑，後續輸出都放在該目錄：
 
@@ -31,38 +28,63 @@ python scripts/exam_files.py run-dir "D:/題庫" --subject "資料結構" --outp
 ```shell
 python scripts/exam_files.py inventory "D:/題庫" --output "D:/題庫/_analysis/盤點/inventory.json"
 python scripts/exam_files.py inventory "D:/題庫" --manifest "D:/下載記錄/manifest.sqlite3" --output "D:/題庫/_analysis/盤點/inventory-with-metadata.json"
+```
+
+按官方科目列出編號、試題檔案數、年度範圍與代表檔案。缺少 metadata 時，檔名與資料夾只作提示，必要時以首頁擷取或渲染核對表頭；不將題型當科目，不猜年度或考試。無法確認的檔案列為「科目待確認」，盤點階段不做全文分析。
+
+請使用者命名一個備考科目、選取來源科目，並選填目標考試／等別／類科；沒有多選介面時接受編號列表。已明確指定的範圍不重問；未確認檔案讓使用者依檔案編號選擇，不靜默排除或加入。零選取不分析，AI 建議不能擴張選取。
+
+一次分析一個備考科目，同一來源可供不同次分析使用。選取代表分析來源，不代表整卷都屬於該科。依 [selection 格式](output-contract.md#selection) 保存 selection.json，路徑使用絕對路徑，未知 metadata 寫 null。
+
+盤點檔案讀取失敗、資料夾存取失敗與未知 manifest 列入 warnings；PDF 失敗逐檔回報，其他檔案繼續。命令成功不表示所有 PDF 成功，須檢查每筆 status。
+
+**產出**：工具生成 inventory；宿主保存 selection。
+
+**完成條件**：使用者已確認備考科目與非空來源範圍，未知 metadata 留 null。
+
+**例外與下一步**：表頭不明查 [文字擷取](#文字擷取) 或 [渲染](visual-review.md#渲染) 的首頁預覽。零選取停止；確認後進入渲染。
+
+## 文字擷取
+
+**進入條件**：需要核對表頭或文字片段；全文須先確認 selection。
+
+**輸入**：inventory；全文另需 selection。
+
+**操作**：
+
+
+```shell
 python scripts/exam_files.py extract --inventory "D:/題庫/_analysis/盤點/inventory.json" --pages 1 --output "D:/題庫/_analysis/盤點/headers.json"
 python scripts/exam_files.py extract --inventory "D:/題庫/_analysis/盤點/inventory.json" --selection "D:/題庫/_analysis/資料結構/本次/selection.json" --output "D:/題庫/_analysis/資料結構/本次/extraction.json"
 ```
 
-`--pages` 為一基頁碼，以逗號分隔，例如 `1,2`；未提供代表全文。未提供 selection 時只允許首頁預覽，防止選取前擷取全部試卷。輸出以暫存檔原子發佈，必須是不存在的新檔，不覆寫來源。`--resume` 接受先前的 extraction.json，重用合格結果但仍輸出到新檔；render 的 `--resume` 接受 render-index.json，同一個 output 只允許相同選取、相同頁碼範圍與相同渲染設定恢復，否則請使用新輸出。渲染逐頁寫 append-only journal，文件結束才折回索引；圖片不覆寫。文字與渲染索引不可混用。
+`--pages` 為一基頁碼，以逗號分隔，例如 `1,2`；未提供代表全文。未提供 selection 時只允許首頁預覽，防止選取前擷取全部試卷。輸出以暫存檔原子發佈，必須是不存在的新檔，不覆寫來源。
 
-盤點檔案讀取失敗、資料夾存取失敗與未知 manifest 會列入 warnings；PDF 失敗會逐檔回報，其他檔案繼續。命令成功不表示所有 PDF 都成功，應檢查每筆 status。
 
-## 精簡分析
+**產出**：工具生成 headers.json 或 extraction.json。
 
-先完成 selection 與 render，再依 [精簡考點分析](compact-analysis.md) 跨來源抽樣建立分類表、設定分類版本，才執行 prepare。`prepare` 會檢查每個已選來源都有 render 索引、至少一頁可用；缺頁只會產生 warning 與 `missing_pages`，不會靜默假裝完整。`--no-cache` 可強制重跑，`--prior` 則重用完整快取。
+**完成條件**：已保存文字與各檔 status，不把擷取成功當判讀完成。
 
-```shell
-python scripts/compact_analysis.py prepare --inventory inventory.json --selection selection.json --render-index render-index.json --topics topics.json --output work.json
-python scripts/compact_analysis.py status --work work.json
-python scripts/compact_analysis.py packet --work work.json --batch-id "S來源短ID-1" --context 1 --output packet-001.json
-python scripts/compact_analysis.py merge --work work.json --results result-001.json --visual-review visual-review.json --extraction extraction.json --output question-index.json
-python scripts/compact_analysis.py summary --index question-index.json --target "高考" --output summary.json
-```
+**例外與下一步**：回到原階段；有擷取結果時合併須傳 --extraction；中斷查 [文字擷取恢復](#文字擷取恢復)。
 
-批次回覆、merge 選項、目標考試切換與 AI 快取條件統一見 [精簡考點分析](compact-analysis.md)；視覺完成判定見 [視覺檢查](visual-review.md)。`question-index` 使用 schema 3，`summary` 使用 schema 2，欄位見 [資料契約](output-contract.md)。
+## 文字擷取恢復
 
-文字擷取恢復只重用完整擷取，且來源內容雜湊、工具版本、pypdf 版本與頁碼範圍皆一致的結果；不符合時重新擷取。渲染恢復與圖片快取條件統一見視覺檢查文件。
+**進入條件**：已有舊 extraction.json，需恢復擷取。
+
+**輸入**：舊擷取結果、目前來源、頁碼範圍與環境。
+
+**操作**：
+
+`extract --resume` 接受先前 extraction.json，重用合格結果但仍輸出到新檔。只重用完整擷取，且來源內容雜湊、工具版本、pypdf 版本與頁碼範圍皆一致；不符合時重新擷取。文字與渲染索引不可混用。
+
+**產出**：新的 extraction.json。
+
+**完成條件**：已核對來源、版本、範圍與逐檔結果。
+
+**例外與下一步**：回原階段；圖片恢復見 [渲染恢復](visual-review.md#渲染恢復)。
 
 ## Manifest 邊界
 
 只支援本專案 SQLite schema_version 1／2 的 `meta`、`attachments` 與 `snapshot_records` 已知欄位，使用 SQLite `mode=ro` 及 query_only，不呼叫會初始化／遷移資料庫的爬蟲類別。
 
 metadata 只在附件 SHA-256 與實際檔案相符時掛載，保留各 snapshot／record／asset 的關聯；資料庫 path 不作為讀取任意檔案的指令。未知版本、缺表或讀取錯誤回報 warning 並退回檔名／表頭人工辨識。舊版 attachment_versions 不自動猜測歸屬；若舊檔雜湊未命中，視為 metadata 未確認。
-
-## 驗證
-
-在有 pypdf、pypdfium2 與 Pillow 的環境執行 `python -m unittest discover -s tests -v`。渲染測試會在缺少 pypdfium2 或 Pillow 時 skip，不會讓整個測試模組 ImportError。測試使用自行產生的 PDF，不讀取使用者試卷。`tests/behavior-cases.md` 提供宿主 AI 人工驗收案例；腳本測試不能證明語意分類正確。
-
-目前驗證結果與尚未完成的雙平台測試見 [驗證紀錄](../tests/validation.md)。
