@@ -28,7 +28,6 @@ from app.crawler.rate_limiter import RateLimitConfig, RateLimiter
 from app.engine.downloader import Downloader
 from app.engine.path_builder import DEFAULT_TEMPLATES, PathMode
 from app.engine.query_service import QueryService
-from app.engine.script_builder import generate_powershell_script, generate_windows_batch
 from app.engine.task_service import DEFAULT_WORKERS, MAX_WORKERS, MIN_WORKERS, TaskService, TaskServiceError
 from app.models import ParseStatus, QuerySpec, TaskStatus
 from app.storage.manifest import ManifestStore
@@ -40,7 +39,7 @@ def is_cloud_env() -> bool:
     return any(os.environ.get(k) for k in cloud_env_keys) or not sys.platform.startswith("win")
 
 
-DEFAULT_LOCAL_ROOT = str(Path.home() / "Downloads" / "國考題庫")
+DEFAULT_LOCAL_ROOT = r"C:\國考題庫"
 DEFAULT_CLOUD_ROOT = str(Path(tempfile.gettempdir()) / "moex_exam_bank")
 DEFAULT_ROOT = DEFAULT_CLOUD_ROOT if is_cloud_env() else DEFAULT_LOCAL_ROOT
 SYSTEM_DIR_NAME = "_系統資料"
@@ -165,7 +164,7 @@ def build_controller(
     )
 
 
-EXPECTED_CONTROLLER_API_VERSION = 6
+EXPECTED_CONTROLLER_API_VERSION = 5
 EXPECTED_TASK_SERVICE_API_VERSION = 1
 RESTART_REQUIRED_MESSAGE = "程式已更新，請重新啟動應用程式後重新查詢及下載"
 
@@ -559,13 +558,7 @@ def _reset_candidate_widgets() -> None:
         st.session_state.pop(f"table-editor-{dimension}", None)
 
 
-def _render_task(
-    controller: AppController,
-    auto_refresh: bool,
-    root: str = DEFAULT_ROOT,
-    mode: PathMode = PathMode.A,
-    template: str | None = None,
-) -> None:
+def _render_task(controller: AppController, auto_refresh: bool, root: str = DEFAULT_ROOT) -> None:
     if controller.snapshot is not None and controller.state is not None:
         stats = controller.stats()
         cols = st.columns(3)
@@ -577,40 +570,7 @@ def _render_task(
             st.write(f"預計歸檔 {stats.total_files} 個檔案；實際傳輸（去重）{stats.unique_urls} 份。")
             st.caption("內容相同的附件會共用同一個檔案，實際檔案數可能較少；題型與檔名以下載驗證後為準。")
     disabled = not controller.can_download()
-    if not disabled:
-        with st.container(border=True):
-            st.markdown("#### ⚡ 推薦：本機一鍵直存（免等雲端加載，最快最省時）")
-            st.caption(
-                "直接從考選部官方伺服器下載並自動歸檔至您電腦的「下載\\國考題庫」資料夾，"
-                "自動建立科目子目錄，完全免去雲端二次等待與伺服器頻寬負擔！"
-            )
-            script_items = controller.export_script_items(mode=mode, template=template)
-            if script_items:
-                bat_script = generate_windows_batch(script_items)
-                ps_script = generate_powershell_script(script_items)
-                bcols = st.columns([2, 1])
-                bcols[0].download_button(
-                    label="⚡ 下載 Windows 一鍵批次檔 (.bat)",
-                    data=bat_script.encode("utf-8"),
-                    file_name=f"下載國考題庫_{time.strftime('%Y%m%d_%H%M%S')}.bat",
-                    mime="text/plain",
-                    type="primary",
-                    width="stretch",
-                    key="download-batch-script",
-                    help="推薦：在電腦上雙擊此檔案，直接直連考選部下載並歸檔至「下載\\國考題庫」！",
-                )
-                bcols[1].download_button(
-                    label="📄 PowerShell 腳本 (.ps1)",
-                    data=ps_script.encode("utf-8"),
-                    file_name=f"下載國考題庫_{time.strftime('%Y%m%d_%H%M%S')}.ps1",
-                    mime="text/plain",
-                    width="stretch",
-                    key="download-ps-script",
-                )
-
-        st.markdown("#### 📦 雲端伺服器加載與打包（適合手機、平板或不方便執行腳本的使用者）")
-
-    btn_label = "開始雲端加載" if is_cloud_env() else "開始下載"
+    btn_label = "開始加載" if is_cloud_env() else "開始下載"
     if st.button(btn_label, type="primary", disabled=disabled, width="stretch"):
         state = controller.start_download()
         if controller.last_error:
@@ -794,7 +754,7 @@ def _create_zip_from_paths(root: str, relative_paths: tuple[str, ...]) -> tuple[
     created_dirs: set[str] = set()
     archive_names: set[str] = set()
 
-    with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_STORED) as zf:
+    with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
         for p in sorted(pdf_files):
             raw_rel_path = p.relative_to(root_path).as_posix()
             rel_path = _sanitize_zip_rel_path(raw_rel_path, max_bytes=180)
@@ -822,7 +782,7 @@ def _create_zip_from_paths(root: str, relative_paths: tuple[str, ...]) -> tuple[
             zinfo = zipfile.ZipInfo(filename=rel_path, date_time=mtime)
             zinfo.create_system = 0
             zinfo.external_attr = 0x20  # FILE_ATTRIBUTE_ARCHIVE
-            zinfo.compress_type = zipfile.ZIP_STORED
+            zinfo.compress_type = zipfile.ZIP_DEFLATED
             zinfo.flag_bits |= 0x800
             zf.writestr(zinfo, file_bytes)
 
@@ -861,13 +821,7 @@ def main() -> None:
             _render_candidates(controller)
         with st.container(border=True, key="download-section"):
             _section_heading("03", "下載與歸檔", "確認選取內容，再將試題整理到本機。")
-            _render_task(
-                controller,
-                auto_refresh,
-                root=page_settings["root"],
-                mode=page_settings["mode"],
-                template=page_settings["template"],
-            )
+            _render_task(controller, auto_refresh, page_settings["root"])
     else:
         st.markdown(
             '<div class="empty-state"><strong>你的下一份練習，從這裡開始</strong>'

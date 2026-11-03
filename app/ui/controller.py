@@ -43,7 +43,7 @@ DIMENSION_LABELS = {"exams": "考試", "categories": "類科", "subjects": "科�
 
 #: 控制器對外介面版本；UI 以此判斷 session 內的實例是否過期（熱重載後必須重建）。
 #: 只要新增／修改 AppController 的公開方法就必須 +1。
-CONTROLLER_API_VERSION = 6
+CONTROLLER_API_VERSION = 5
 EXPECTED_TASK_SERVICE_API_VERSION = 1
 RESTART_REQUIRED_MESSAGE = "程式已更新，請重新啟動應用程式後重新查詢及下載"
 
@@ -479,25 +479,6 @@ class AppController:
         if any(not result.relative_path for result in results):
             raise TaskServiceError("任務成果缺少檔案路徑，無法匯出")
         return tuple(sorted({result.relative_path for result in results if result.relative_path}))
-
-    def export_script_items(
-        self, mode: PathMode = PathMode.A, template: str | None = None
-    ) -> list[tuple[str, str]]:
-        """產生目前選取考科的 (url, relative_path) 清單，供腳本生成器使用。"""
-        plan = self.preview(mode=mode, template=template)
-        if plan is None:
-            return []
-        records = self.selected_records()
-        url_map: dict[tuple[str, str], str] = {}
-        for r in records:
-            for a in r.assets:
-                url_map[(r.record_id, a.asset_id)] = a.url
-        items: list[tuple[str, str]] = []
-        for f in plan.files:
-            url = url_map.get((f.record_id, f.asset_id))
-            if url:
-                items.append((url, f.relative_path))
-        return items
 
     def cancel(self) -> TaskState | None:
         if self.task_id is None:
