@@ -426,3 +426,32 @@ def test_confirmed_type_is_not_provisional(tmp_path) -> None:
 
     assert plan.files[0].is_provisional is False
     assert plan.files[0].relative_path.endswith("_測驗試題.pdf")
+
+
+def test_combined_exam_is_smart_simplified(tmp_path) -> None:
+    """多合一合併超長考試名稱依類科精確配對子特考，絕不產生雜湊碼截斷。"""
+    long_name = (
+        "105年公務人員特種考試關務人員考試、"
+        "105年公務人員特種考試身心障礙人員考試、"
+        "105年國軍上校以上軍官轉任公務人員考試"
+    )
+    record = replace(
+        make_record("r1", category="關務特考三等考試_資訊處理", subject="資料結構"), year=105,
+        exam_name=long_name,
+        exam_name_key=long_name,
+    )
+    plan = build_plan(tmp_path, (record,), mode=PathMode.A)
+    path = plan.files[0].relative_path
+
+    assert path == "資料結構/105_105年公務人員特種考試關務人員考試_關務特考三等考試_資訊處理_試題.pdf"
+
+
+def test_middle_truncation_preserves_tail(tmp_path) -> None:
+    """超長檔名段在極端截斷時仍保留尾端類科與題型。"""
+    long_subject = "超長科目名稱" * 25
+    record = make_record("r1", subject=long_subject, category="資訊處理")
+    plan = build_plan(tmp_path, (record,), mode=PathMode.C)
+    filename = plan.files[0].relative_path
+
+    assert filename.endswith("_試題.pdf")
+    assert len(filename.encode("utf-8")) <= 200

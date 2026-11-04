@@ -165,6 +165,54 @@ def _truncate_body(body: str, keep_chars: int, keep_bytes: int) -> str:
     return "".join(kept)
 
 
+def _truncate_segment(
+    text: str,
+    token: str,
+    *,
+    max_chars: int,
+    max_bytes: int,
+    context: str = "",
+) -> str:
+    """縮短路徑段；若含後綴（如題型、類科）則採用中間縮短保留尾綴。"""
+    suffix = ".pdf" if text.lower().endswith(".pdf") else ""
+    stem = text[: len(text) - len(suffix)] if suffix else text
+
+    parts = stem.split("_")
+    tail = ""
+    if len(parts) >= 2:
+        tail_parts: list[str] = []
+        tail_bytes = 0
+        for p in reversed(parts[1:]):
+            seg = f"_{p}"
+            seg_b = len(seg.encode("utf-8"))
+            if tail_bytes + seg_b <= 60:
+                tail_parts.insert(0, p)
+                tail_bytes += seg_b
+            else:
+                break
+        if tail_parts:
+            tail = "_" + "_".join(tail_parts)
+
+    head = stem[: len(stem) - len(tail)] if tail else stem
+    middle_tag = f"_{token}"
+    fixed_bytes = len(middle_tag.encode("utf-8")) + len(tail.encode("utf-8")) + len(suffix.encode("utf-8"))
+    avail_bytes = max_bytes - fixed_bytes
+    avail_chars = max_chars - len(middle_tag) - len(tail) - len(suffix)
+
+    if avail_bytes < 3 or avail_chars < 1:
+        tail = ""
+        fixed_bytes = len(middle_tag.encode("utf-8")) + len(suffix.encode("utf-8"))
+        avail_bytes = max_bytes - fixed_bytes
+        avail_chars = max_chars - len(middle_tag) - len(suffix)
+        head = stem
+
+    if avail_bytes < 1 or avail_chars < 1:
+        raise PathBuildError(f"名稱過長且位元組上限過小，無法安全縮短：{context or text!r}")
+
+    kept_head = _truncate_body(head, avail_chars, avail_bytes).rstrip("_ ")
+    return f"{kept_head}{middle_tag}{tail}{suffix}"
+
+
 def sanitize_segment(
     value: str,
     *,
@@ -192,19 +240,63 @@ def sanitize_segment(
 
     if len(text) > max_length or len(text.encode("utf-8")) > max_bytes:
         token = _hash_token(value)
-        suffix = ".pdf" if text.lower().endswith(".pdf") else ""
-        body = text[: len(text) - len(suffix)] if suffix else text
-        keep_chars = max(1, max_length - len(token) - 1 - len(suffix))
-        keep_bytes = max_bytes - len(token.encode("utf-8")) - 1 - len(suffix.encode("utf-8"))
-        if keep_bytes < 1:
-            raise PathBuildError(
-                f"名稱過長且位元組上限過小，無法安全縮短：{context or value!r}"
-            )
-        text = f"{_truncate_body(body, keep_chars, keep_bytes)}_{token}{suffix}"
+        text = _truncate_segment(
+            text,
+            token,
+            max_chars=max_length,
+            max_bytes=max_bytes,
+            context=context or value,
+        )
 
     if not text:
         raise PathBuildError(f"清理後名稱為空：{context or value!r}")
     return text
+
+
+def simplify_exam_name(exam_name: str, category: str = "") -> str:
+    """將過長的合併特考名稱智慧精簡為該考科所屬的特定特考或代表性簡稱。"""
+    if not exam_name or len(exam_name) <= 30:
+        return exam_name
+
+    parts = [p.strip() for p in re.split(r"[、及]", exam_name) if p.strip()]
+    if len(parts) <= 1:
+        return exam_name
+
+    year_match = re.match(r"^(\d{2,3}年)", exam_name)
+    year_prefix = year_match.group(1) if year_match else ""
+
+    # 由 category 提取有辨識度的核心關鍵字比對子考試
+    tokens = [t.strip() for t in re.split(r"[_（）\(\)\s/]", category or "") if t.strip()]
+    kws: set[str] = set()
+    for t in tokens:
+        t_clean = re.sub(r"(?:高員)?(?:[一二三四五]等|高考(?:[一二三]級)?|普考|初等)(?:考試)?", "", t)
+        for term in ("特種考試", "特考", "考試", "人員", "業務", "類科", "組", "官"):
+            t_clean = t_clean.replace(term, "")
+        if len(t_clean) >= 2:
+            kws.add(t_clean)
+        if len(t) >= 2:
+            kws.add(t[:2])
+            kws.add(t[:4])
+
+    sorted_kws = sorted(kws, key=lambda x: -len(x))
+    matched: str | None = None
+    for kw in sorted_kws:
+        for part in parts:
+            clean_part = re.sub(r"^\d{2,3}年", "", part)
+            if kw in clean_part:
+                matched = part
+                break
+        if matched:
+            break
+
+    if matched:
+        if year_prefix and not matched.startswith(year_prefix):
+            matched = f"{year_prefix}{matched}"
+        return matched
+
+    first_part = parts[0]
+    first_clean = re.sub(r"考試$", "", first_part)
+    return f"{first_clean}等考試"
 
 
 def _variable_map(
@@ -217,11 +309,12 @@ def _variable_map(
     """建立模板變數；缺資料時使用 SPEC 指定的替代文字。"""
     is_answer = asset.role is AssetRole.CHOICE_ANSWER
     type_token = ANSWER_TOKEN if is_answer else FILENAME_TYPE_TOKENS[asset_type]
+    simplified_exam = simplify_exam_name(record.exam_name, record.category)
     return {
         "年度": str(record.year) if record.year else "",
         "年度標籤": f"{record.year}年" if record.year else "",
-        "考試名稱": record.exam_name,
-        "考試簡稱": record.exam_short_name or record.exam_name,
+        "考試名稱": simplified_exam,
+        "考試簡稱": record.exam_short_name or simplified_exam,
         "類科": record.category,
         "科目": record.subject,
         "等別": record.level or MISSING_LEVEL,
