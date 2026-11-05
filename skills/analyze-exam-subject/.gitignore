@@ -1,6 +1,0 @@
-__pycache__/
-*.py[cod]
-.pytest_cache/
-*.tmp
-tests-run.log
-cli-test.log
