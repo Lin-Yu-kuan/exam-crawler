@@ -495,6 +495,84 @@ class ManifestStore:
                 ),
             )
 
+    def record_shared_attachment(
+        self,
+        *,
+        asset_id: str,
+        snapshot_id: str,
+        record_id: str,
+        url: str,
+        role: str,
+        path: str,
+        sha256: str,
+        size: int,
+        version: int,
+        dedupe_of: str,
+        question_type: str | None = None,
+        etag: str | None = None,
+        last_modified: str | None = None,
+        status: AttachmentStatus = AttachmentStatus.COMPLETED,
+    ) -> None:
+        """一步完成同卷共用附件之登記與版本紀錄，避免拆分為三次獨立連線與交易。"""
+        timestamp = _now_iso()
+        with self._connection() as conn:
+            conn.execute("BEGIN")
+            try:
+                conn.execute(
+                    "INSERT INTO attachments ("
+                    " asset_id, snapshot_id, record_id, url, role, status,"
+                    " path, sha256, size, version, etag, last_modified, question_type,"
+                    " dedupe_of, updated_at"
+                    ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                    "ON CONFLICT(asset_id) DO UPDATE SET"
+                    " snapshot_id = excluded.snapshot_id,"
+                    " record_id = excluded.record_id,"
+                    " url = excluded.url,"
+                    " role = excluded.role,"
+                    " status = excluded.status,"
+                    " path = excluded.path,"
+                    " sha256 = excluded.sha256,"
+                    " size = excluded.size,"
+                    " version = excluded.version,"
+                    " etag = excluded.etag,"
+                    " last_modified = excluded.last_modified,"
+                    " question_type = excluded.question_type,"
+                    " dedupe_of = excluded.dedupe_of,"
+                    " error_code = NULL,"
+                    " error_message = NULL,"
+                    " updated_at = excluded.updated_at",
+                    (
+                        asset_id,
+                        snapshot_id,
+                        record_id,
+                        url,
+                        role,
+                        status.value,
+                        path,
+                        sha256,
+                        size,
+                        version,
+                        etag,
+                        last_modified,
+                        question_type,
+                        dedupe_of,
+                        timestamp,
+                    ),
+                )
+                conn.execute(
+                    "INSERT INTO attachment_versions ("
+                    " asset_id, version, path, sha256, size, archived_at"
+                    ") VALUES (?, ?, ?, ?, ?, ?) "
+                    "ON CONFLICT(asset_id, version) DO UPDATE SET"
+                    " path = excluded.path, sha256 = excluded.sha256,"
+                    " size = excluded.size, archived_at = excluded.archived_at",
+                    (asset_id, version, path, sha256, size, timestamp),
+                )
+                conn.execute("COMMIT")
+            except Exception:
+                conn.execute("ROLLBACK")
+                raise
+
     def begin_attachment_verify(
         self, *, asset_id: str, path: str, sha256: str, size: int, version: int
     ) -> None:

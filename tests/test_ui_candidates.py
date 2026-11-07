@@ -96,10 +96,10 @@ def test_metric_row_reflects_initial_selection(candidates_app: AppTest) -> None:
     metrics = {m.label: m.value for m in candidates_app.metric}
     assert "已選考科" in metrics
     assert int(metrics["已選考科"]) > 0
-    assert "試題附件" in metrics
-    assert "答案附件" in metrics
     assert "不重複試題" in metrics
-    assert int(metrics["不重複試題"]) <= int(metrics["試題附件"])
+    assert "不重複答案" in metrics
+    assert "實際加載試卷" in metrics
+    assert int(metrics["不重複試題"]) <= int(metrics["實際加載試卷"])
 
 
 def test_none_button_sets_zero_selection_and_disables_download() -> None:

@@ -712,16 +712,18 @@ def _render_task(controller: AppController, auto_refresh: bool, root: str = DEFA
         cols = st.columns(4)
         for col, label, value in zip(
             cols,
-            ("已選考科", "試題附件", "答案附件", "不重複試題"),
-            (stats.records, stats.question_assets, stats.answer_assets, stats.question_papers),
+            ("已選考科", "不重複試題", "不重複答案", "實際加載試卷"),
+            (stats.records, stats.question_papers, stats.answer_papers, stats.unique_papers),
         ):
             col.metric(label, value, border=True)
         st.caption(f"儲存位置：{cloud_display_root(root)}")
         with st.expander("檔案與傳輸明細"):
             st.write(
-                f"{stats.records} 個考科、{stats.total_files} 個附件 → "
-                f"{stats.question_papers} 份試題、{stats.answer_papers} 份答案；"
-                f"{stats.shared_question_files} 個試題附件與其他類科共用同一份試卷。"
+                f"已選 **{stats.records}** 個考科，涵蓋 **{stats.total_files}** 個類科附件參照。"
+            )
+            st.write(
+                f"✨ **試卷層級去重收斂**：實際僅需加載 **{stats.unique_papers}** 份試卷（{stats.question_papers} 份試題 ＋ {stats.answer_papers} 份答案）。"
+                f"其中 **{stats.shared_files}** 個附件自動共用代表試卷，同一份共用的考卷只下載一次！"
             )
             st.caption("內容相同的其他附件仍會以 SHA-256 共用同一個檔案，實際檔案數可能較少；題型與檔名以下載驗證後為準。")
     disabled = not controller.can_download()
@@ -793,8 +795,15 @@ def _render_task(controller: AppController, auto_refresh: bool, root: str = DEFA
     if state is None:
         return
 
-    total = max(1, state.total)
-    st.progress(min(1.0, state.done / total), text=f"已處理 {state.done}／{state.total} 份")
+    if state.units_total > 0:
+        ratio = min(1.0, state.units_done / max(1, state.units_total))
+        st.progress(
+            ratio,
+            text=f"已加載 {state.units_done}／{state.units_total} 份不重複試卷（涵蓋 {state.done} 個類科附件）",
+        )
+    else:
+        total = max(1, state.total)
+        st.progress(min(1.0, state.done / total), text=f"已處理 {state.done}／{state.total} 份")
     message = f"{state.status.value}｜{state.message}"
     if state.failed:
         st.warning(message)

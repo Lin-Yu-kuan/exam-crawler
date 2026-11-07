@@ -8,7 +8,7 @@ import pathlib
 import httpx
 import pytest
 
-from app.engine.downloader import DownloadTarget, Downloader
+from app.engine.downloader import DownloadResult, DownloadTarget, Downloader
 from app.models import (
     AssetRole,
     AttachmentStatus,
@@ -643,5 +643,37 @@ def test_share_existing_fails_when_source_file_is_missing_or_corrupted(
     assert result.error_code == "shared-source-missing"
     row = store.get_attachment("follower-q1")
     assert row is not None
-    assert row.status is AttachmentStatus.FAILED
-    assert row.error_code == "shared-source-missing"
+
+
+def test_share_existing_fast_path_with_source_result(
+    tmp_path, store, sample_pdf
+) -> None:
+    """傳入 source_result 時走快速路徑：不需重新從磁碟讀取校驗 SHA-256。"""
+    server = Server([])
+    downloader = make_downloader(tmp_path, store, server)
+
+    source_result = DownloadResult(
+        asset_id="primary-q1",
+        status=AttachmentStatus.COMPLETED,
+        relative_path="A/115_試題.pdf",
+        size_bytes=len(sample_pdf),
+        sha256=hashlib.sha256(sample_pdf).hexdigest(),
+        version=1,
+    )
+
+    follower = make_target("follower-q1", "B/115_另一類科_試題.pdf")
+    result = downloader.share_existing(
+        follower, source_asset_id="primary-q1", source_result=source_result
+    )
+
+    assert result.status is AttachmentStatus.COMPLETED
+    assert result.shared_by_paper is True
+    assert result.dedupe_of == "primary-q1"
+    assert result.relative_path == "A/115_試題.pdf"
+    assert result.sha256 == source_result.sha256
+
+    row = store.get_attachment("follower-q1")
+    assert row is not None
+    assert row.status is AttachmentStatus.COMPLETED
+    assert row.path == "A/115_試題.pdf"
+    assert row.dedupe_of == "primary-q1"

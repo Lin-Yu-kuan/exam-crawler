@@ -271,10 +271,72 @@ class Downloader:
 
     # --- 同卷共用既有檔案 ---------------------------------------------
     def share_existing(
-        self, target: DownloadTarget, *, source_asset_id: str
+        self,
+        target: DownloadTarget,
+        *,
+        source_asset_id: str,
+        source_result: DownloadResult | None = None,
     ) -> DownloadResult:
         """同卷共用已完成代表附件：驗證來源檔完好後寫入 manifest，不發出網路請求。"""
         asset = target.asset
+
+        # 快速路徑：若傳入剛剛同批驗證完畢的代表結果，直接信任並登記，免除重複讀檔計算 SHA-256 與多次交易
+        if (
+            source_result is not None
+            and source_result.is_success
+            and source_result.relative_path
+            and source_result.sha256
+        ):
+            if hasattr(self._store, "record_shared_attachment"):
+                self._store.record_shared_attachment(
+                    asset_id=asset.asset_id,
+                    snapshot_id=self._snapshot_id,
+                    record_id=target.record.record_id,
+                    url=asset.url,
+                    role=asset.role.value,
+                    path=source_result.relative_path,
+                    sha256=source_result.sha256,
+                    size=source_result.size_bytes or 0,
+                    version=source_result.version or 1,
+                    dedupe_of=source_asset_id,
+                    question_type=source_result.question_type.value
+                    if getattr(source_result, "question_type", None)
+                    else None,
+                )
+            else:
+                self._store.mark_attachment_started(
+                    asset_id=asset.asset_id,
+                    snapshot_id=self._snapshot_id,
+                    record_id=target.record.record_id,
+                    url=asset.url,
+                    role=asset.role.value,
+                )
+                self._store.begin_attachment_verify(
+                    asset_id=asset.asset_id,
+                    path=source_result.relative_path,
+                    sha256=source_result.sha256,
+                    size=source_result.size_bytes or 0,
+                    version=source_result.version or 1,
+                )
+                self._store.complete_attachment(
+                    asset_id=asset.asset_id,
+                    path=source_result.relative_path,
+                    sha256=source_result.sha256,
+                    size=source_result.size_bytes or 0,
+                    version=source_result.version or 1,
+                    dedupe_of=source_asset_id,
+                )
+            return DownloadResult(
+                asset_id=asset.asset_id,
+                status=AttachmentStatus.COMPLETED,
+                relative_path=source_result.relative_path,
+                size_bytes=source_result.size_bytes,
+                sha256=source_result.sha256,
+                version=source_result.version,
+                dedupe_of=source_asset_id,
+                shared_by_paper=True,
+            )
+
         self._store.mark_attachment_started(
             asset_id=asset.asset_id,
             snapshot_id=self._snapshot_id,

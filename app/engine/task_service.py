@@ -77,7 +77,11 @@ class DownloaderProtocol(Protocol):
         ...
 
     def share_existing(  # pragma: no cover - 介面
-        self, target: DownloadTarget, *, source_asset_id: str
+        self,
+        target: DownloadTarget,
+        *,
+        source_asset_id: str,
+        source_result: DownloadResult | None = None,
     ) -> DownloadResult:
         ...
 
@@ -124,6 +128,8 @@ class TaskState:
     unsupported: tuple[tuple[str, str], ...] = ()
     relocated: int = 0
     group_shared: int = 0
+    units_total: int = 0
+    units_done: int = 0
 
     @property
     def done(self) -> int:
@@ -149,6 +155,8 @@ class TaskState:
                     extras.append(text)
                 elif self.relocated:
                     extras.append(f"搬移 {self.relocated} 個既有檔案")
+                if self.units_total > 0 and self.group_shared > 0:
+                    return f"全部完成（共下載 {self.units_total} 份不重複試卷，涵蓋全部 {self.total} 個考科附件，其中 {'、'.join(extras)}）"
                 return f"全部完成（{self.done}/{self.total}，其中 {'、'.join(extras)}）"
             return f"全部完成（{self.done}/{self.total}）"
         if self.status is TaskStatus.PARTIAL:
@@ -218,6 +226,8 @@ class _Task:
     relocated: int = 0
     failed: int = 0
     cancelled: int = 0
+    units_total: int = 0
+    units_done: int = 0
     events: list[TaskEvent] = field(default_factory=list)
     failures: list[tuple[str, str, str]] = field(default_factory=list)
     reserved: dict[str, str] = field(default_factory=dict)
@@ -250,6 +260,8 @@ class _Task:
             unsupported=tuple(self.unsupported),
             relocated=self.relocated,
             group_shared=self.group_shared,
+            units_total=self.units_total,
+            units_done=self.units_done,
         )
 
 
@@ -602,13 +614,16 @@ class TaskService:
         raise PathBuildError("無法為附件取得唯一檔名")
 
     def _run(self, task: _Task, snapshot: QuerySnapshot) -> None:
+        units = self._build_units(task.targets)
         with self._lock:
+            task.units_total = len(units)
+            task.units_done = 0
             task.status = TaskStatus.DOWNLOADING
             task.started_at = task.started_at or _now_iso()
         self._notify(task.state())
 
         try:
-            self._dispatch(task)
+            self._dispatch(task, units)
         finally:
             with self._lock:
                 self._finalize(task)
@@ -631,8 +646,7 @@ class TaskService:
             for key, items in grouped.items()
         ]
 
-    def _dispatch(self, task: _Task) -> None:
-        units = self._build_units(task.targets)
+    def _dispatch(self, task: _Task, units: list[_PaperUnit]) -> None:
         index = 0
         with ThreadPoolExecutor(
             max_workers=self._max_workers, thread_name_prefix=f"dl-{task.task_id}"
@@ -655,8 +669,11 @@ class TaskService:
                 for future in done:
                     inflight.pop(future)
                     results = future.result()
+                    with self._lock:
+                        task.units_done += 1
                     for result in results:
-                        self._record_result(task, result)
+                        self._record_result(task, result, notify=False)
+                    self._notify(task.state())
 
         if task.cancel_requested:
             for unit in units[index:]:
@@ -710,9 +727,16 @@ class TaskService:
                 results.append(self._cancelled_result(task, follower, "取消後未派發"))
                 continue
             try:
-                shared_result = self._downloader.share_existing(
-                    follower, source_asset_id=unit.primary.asset.asset_id
-                )
+                try:
+                    shared_result = self._downloader.share_existing(
+                        follower,
+                        source_asset_id=unit.primary.asset.asset_id,
+                        source_result=primary_result,
+                    )
+                except TypeError:
+                    shared_result = self._downloader.share_existing(
+                        follower, source_asset_id=unit.primary.asset.asset_id
+                    )
             except Exception as exc:
                 shared_result = DownloadResult(
                     asset_id=follower.asset.asset_id,
@@ -761,7 +785,9 @@ class TaskService:
                 error_message=f"{type(exc).__name__}: {exc}",
             )
 
-    def _record_result(self, task: _Task, result: DownloadResult) -> None:
+    def _record_result(
+        self, task: _Task, result: DownloadResult, *, notify: bool = True
+    ) -> None:
         with self._lock:
             if result.is_success:
                 task.successful_results[result.asset_id] = result
@@ -787,20 +813,23 @@ class TaskService:
                 if result.shared_by_paper
                 else ("（內容相同，共用檔案）" if result.shared else "")
             )
-            task.events.append(
-                TaskEvent(
-                    at=_now_iso(),
-                    kind=result.status.value,
-                    message=(
-                        f"{result.status.value}：{result.relative_path or result.error_message or ''}"
-                        f"{share_tag}"
-                        f"{'（已搬移到目前歸檔結構）' if result.relocated else ''}"
-                    ),
-                    asset_id=result.asset_id,
+            # 避免為上萬個同卷共用 follower 塞爆 events 串列；保留代表附件或適量共用事件
+            if not result.shared_by_paper or len(task.events) < 300:
+                task.events.append(
+                    TaskEvent(
+                        at=_now_iso(),
+                        kind=result.status.value,
+                        message=(
+                            f"{result.status.value}：{result.relative_path or result.error_message or ''}"
+                            f"{share_tag}"
+                            f"{'（已搬移到目前歸檔結構）' if result.relocated else ''}"
+                        ),
+                        asset_id=result.asset_id,
+                    )
                 )
-            )
             state = task.state()
-        self._notify(state)
+        if notify:
+            self._notify(state)
 
     def _mark_cancelled(self, task: _Task, target: DownloadTarget, message: str) -> None:
         result = self._cancelled_result(task, target, message)
