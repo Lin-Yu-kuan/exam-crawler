@@ -221,8 +221,8 @@ def build_controller(
     )
 
 
-EXPECTED_CONTROLLER_API_VERSION = 7
-EXPECTED_TASK_SERVICE_API_VERSION = 3
+EXPECTED_CONTROLLER_API_VERSION = 8
+EXPECTED_TASK_SERVICE_API_VERSION = 4
 RESTART_REQUIRED_MESSAGE = "程式已更新，請重新啟動應用程式後重新查詢及下載"
 
 
@@ -795,11 +795,14 @@ def _render_task(controller: AppController, auto_refresh: bool, root: str = DEFA
     if state is None:
         return
 
-    if state.units_total > 0:
-        ratio = min(1.0, state.units_done / max(1, state.units_total))
+    units_total = getattr(state, "units_total", 0)
+    units_done = getattr(state, "units_done", 0)
+
+    if units_total > 0:
+        ratio = min(1.0, units_done / max(1, units_total))
         st.progress(
             ratio,
-            text=f"已加載 {state.units_done}／{state.units_total} 份不重複試卷（涵蓋 {state.done} 個類科附件）",
+            text=f"已加載 {units_done}／{units_total} 份不重複試卷（涵蓋 {state.done} 個類科附件）",
         )
     else:
         total = max(1, state.total)
@@ -821,7 +824,7 @@ def _render_task(controller: AppController, auto_refresh: bool, root: str = DEFA
     ):
         controller.retry()
         st.rerun()
-    new_downloads = max(0, state.completed - state.group_shared - state.deduped)
+    new_downloads = max(0, state.completed - getattr(state, "group_shared", 0) - state.deduped)
     cols[2].caption(
         f"新下載 {new_downloads}／同卷共用 {state.group_shared}／內容共用 {state.deduped}"
         f"／略過 {max(0, state.skipped - state.relocated)}／搬移 {state.relocated}"
@@ -848,7 +851,8 @@ def _render_task(controller: AppController, auto_refresh: bool, root: str = DEFA
                 key=f"download-zip-{state.task_id}-{state.attempt}",
             )
 
-    if state.failures:
+    state_failures = getattr(state, "failures", ())
+    if state_failures:
         # 建立 asset_id -> (record, asset) 快速查找表
         asset_map = {}
         if controller.snapshot is not None:
@@ -856,9 +860,9 @@ def _render_task(controller: AppController, auto_refresh: bool, root: str = DEFA
                 for a in rec.assets:
                     asset_map[a.asset_id] = (rec, a)
 
-        with st.expander(f"⚠️ 部分附件加載失敗（{len(state.failures)} 項，點此展開官方直連下載）"):
+        with st.expander(f"⚠️ 部分附件加載失敗（{len(state_failures)} 項，點此展開官方直連下載）"):
             st.caption("考選部伺服器偶有連線逾時，您可以點擊「重試未完成」，或直接點選下方官方原始連結手動開啟：")
-            for asset_id, code, message in state.failures[:30]:
+            for asset_id, code, message in state_failures[:30]:
                 info = asset_map.get(asset_id)
                 if info:
                     rec, asset = info
@@ -870,13 +874,14 @@ def _render_task(controller: AppController, auto_refresh: bool, root: str = DEFA
                     )
                 else:
                     st.text(f"{asset_id}｜{code}｜{message}")
-    if state.unsupported:
-        with st.expander(f"不支援的附件（{len(state.unsupported)}）"):
-            for asset_id, reason in state.unsupported[:20]:
+    state_unsupported = getattr(state, "unsupported", ())
+    if state_unsupported:
+        with st.expander(f"不支援的附件（{len(state_unsupported)}）"):
+            for asset_id, reason in state_unsupported[:20]:
                 st.text(f"{asset_id}｜{reason}")
     with st.expander("任務詳細資訊與事件紀錄"):
-        st.caption(f"任務 {state.task_id}｜第 {state.attempt} 次嘗試")
-        for event in state.events[-30:]:
+        st.caption(f"任務 {getattr(state, 'task_id', '')}｜第 {getattr(state, 'attempt', 1)} 次嘗試")
+        for event in getattr(state, "events", ())[-30:]:
             st.text(f"{event.at}｜{event.kind}｜{event.message}")
 
     if state.status.is_active and auto_refresh:

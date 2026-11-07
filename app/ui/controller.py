@@ -57,8 +57,8 @@ DIMENSION_LABELS = {"exams": "考試", "categories": "類科", "subjects": "科�
 
 #: 控制器對外介面版本；UI 以此判斷 session 內的實例是否過期（熱重載後必須重建）。
 #: 只要新增／修改 AppController 的公開方法就必須 +1。
-CONTROLLER_API_VERSION = 7
-EXPECTED_TASK_SERVICE_API_VERSION = 3
+CONTROLLER_API_VERSION = 8
+EXPECTED_TASK_SERVICE_API_VERSION = 4
 RESTART_REQUIRED_MESSAGE = "程式已更新，請重新啟動應用程式後重新查詢及下載"
 
 

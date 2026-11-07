@@ -273,7 +273,7 @@
   2. 統計區正確顯示「已選考科 / 試題附件 / 答案附件 / 不重複試題」，明細提示共用份數。
   3. 保留「一般自由查詢」100% 行為不變，新增「共同科目快速查詢模式」，內建 4 大共同科目家族（國文、法學知識與英文、公民與英文、英文/外國文），自動排除子字串偽陽性（如排除「外國文」或「輪機英文」）。
   4. 預覽自動收斂跨類科共用路徑（`collapse_shared_paper_paths`），避免檔案數虛增。
-  5. API 版本對齊：`TaskService.api_version = 3`，`AppController.CONTROLLER_API_VERSION = 7`。
+  5. API 版本對齊：`TaskService.api_version = 4`，`AppController.CONTROLLER_API_VERSION = 8`。
 - **交付**：
   - `app/models.py`：新增 `PAPER_GROUP_RULE_VERSION = "paper-v1"` 與 `paper_group_key(asset)`。
   - `app/engine/filter.py`：`SelectionStats` 新增 `question_papers` 等欄位；新增共同科目家族預設 `COMMON_SUBJECT_PRESETS` 與匹配函式。

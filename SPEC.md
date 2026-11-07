@@ -92,7 +92,7 @@ MVP 採 Python 3.10+、Streamlit 本機介面，預設僅監聽 localhost，檔�
 
 ## 5. 路徑與命名
 
-更新相容性：控制器初始化及 session 復用必須檢查控制器、任務服務介面版本（目前為 `CONTROLLER_API_VERSION = 7`、`EXPECTED_TASK_SERVICE_API_VERSION = 3`）與匯出方法。版本不符時顯示「程式已更新，請重新啟動應用程式後重新查詢及下載」，停止新任務、重試與 ZIP 匯出；不部分重載模組或替換既有背景服務。完整程序重啟後重新建立任務，保留檔案與 manifest，不猜測舊任務範圍。
+更新相容性：控制器初始化及 session 復用必須檢查控制器、任務服務介面版本（目前為 `CONTROLLER_API_VERSION = 8`、`EXPECTED_TASK_SERVICE_API_VERSION = 4`）與匯出方法。版本不符時顯示「程式已更新，請重新啟動應用程式後重新查詢及下載」，停止新任務、重試與 ZIP 匯出；不部分重載模組或替換既有背景服務。完整程序重啟後重新建立任務，保留檔案與 manifest，不猜測舊任務範圍。
 
 路徑預覽在計算後會自動套用試卷收斂（`collapse_shared_paper_paths`），同一份試卷跨類科在預覽中只列出代表檔案，避免預覽清單膨脹，並顯示警示提示實際建立檔案數。
 

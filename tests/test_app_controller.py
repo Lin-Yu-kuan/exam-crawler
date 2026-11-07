@@ -55,7 +55,7 @@ class FakeQueryService:
 
 
 class FakeTaskService:
-    api_version = 3
+    api_version = 4
 
     def export_results(self, task_id):
         return ()

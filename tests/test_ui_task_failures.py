@@ -136,3 +136,60 @@ def test_failure_list_renders_for_unknown_asset(tmp_path) -> None:
     assert "考選部伺服器偶有連線逾時" in _captions(app)
     texts = " ".join(str(item.value) for item in app.text)
     assert "missing-asset-id" in texts
+
+
+LEGACY_STATE_SCRIPT = '''
+import types
+import streamlit as st
+from app.models import TaskStatus
+from app.ui import web_app
+
+legacy_state = types.SimpleNamespace(
+    task_id="task-legacy",
+    status=TaskStatus.COMPLETED,
+    total=5,
+    completed=5,
+    skipped=0,
+    deduped=0,
+    failed=0,
+    cancelled=0,
+    group_shared=0,
+    relocated=0,
+    done=5,
+    message="全部完成（5/5）",
+)
+
+class _LegacyTaskController:
+    api_version = web_app.EXPECTED_CONTROLLER_API_VERSION
+    _root = r"__ROOT__"
+    snapshot = None
+    state = None
+    last_error = None
+
+    def progress(self):
+        return legacy_state
+
+    def can_download(self):
+        return False
+
+    def is_task_active(self):
+        return False
+
+    def export_paths(self):
+        return ()
+
+controller = _LegacyTaskController()
+web_app._render_task(controller, False, root=r"__ROOT__")
+'''
+
+
+def test_render_task_with_legacy_state_without_units_total(tmp_path) -> None:
+    """模擬舊版或缺少 units_total 屬性的 TaskState 實例，_render_task 必須平滑降級而不拋 AttributeError。"""
+    script = LEGACY_STATE_SCRIPT.replace("__ROOT__", str(tmp_path))
+    app = AppTest.from_string(script, default_timeout=60)
+    app.run()
+
+    assert not app.exception
+    # 確認成功降級以附件總數顯示進度
+    assert any("已處理 5／5 份" in str(getattr(p, "text", "")) for p in app.progress)
+
