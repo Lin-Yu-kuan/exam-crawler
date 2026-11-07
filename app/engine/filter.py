@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
 
-from app.models import AssetRole, ExamRecord, compact_key
+from app.models import AssetRole, ExamRecord, compact_key, paper_group_key
 
 #: 簡稱對照表版本；調整對照內容時必須遞增
 SHORT_NAME_VERSION = "short-names-v1"
@@ -102,10 +102,22 @@ class SelectionStats:
     other_assets: int
     total_files: int
     unique_urls: int
+    question_papers: int = 0
+    answer_papers: int = 0
+    other_papers: int = 0
+    unique_papers: int = 0
 
     @property
     def has_records(self) -> bool:
         return self.records > 0
+
+    @property
+    def shared_files(self) -> int:
+        return max(0, self.total_files - self.unique_papers)
+
+    @property
+    def shared_question_files(self) -> int:
+        return max(0, self.question_assets - self.question_papers)
 
 
 @dataclass(frozen=True)
@@ -363,18 +375,27 @@ def _replace_dimension(state: FilterState, dimension: str, values: frozenset[str
 
 
 def selection_stats(records: tuple[ExamRecord, ...]) -> SelectionStats:
-    """計算考科數、各角色附件數、歸檔檔數與實際傳輸去重。"""
+    """計算考科數、各角色附件數、歸檔檔數與實際傳輸／試卷去重。"""
     urls: set[str] = set()
+    q_groups: set[str] = set()
+    a_groups: set[str] = set()
+    o_groups: set[str] = set()
+    all_groups: set[str] = set()
     question = answer = other = 0
     for record in records:
         for asset in record.assets:
             urls.add(asset.url)
+            group_key = paper_group_key(asset) or f"url:{asset.url}"
+            all_groups.add(group_key)
             if asset.role is AssetRole.QUESTION:
                 question += 1
+                q_groups.add(group_key)
             elif asset.role is AssetRole.CHOICE_ANSWER:
                 answer += 1
+                a_groups.add(group_key)
             else:
                 other += 1
+                o_groups.add(group_key)
     return SelectionStats(
         records=len(records),
         exams=len({record.exam_name for record in records}),
@@ -384,6 +405,10 @@ def selection_stats(records: tuple[ExamRecord, ...]) -> SelectionStats:
         other_assets=other,
         total_files=question + answer + other,
         unique_urls=len(urls),
+        question_papers=len(q_groups),
+        answer_papers=len(a_groups),
+        other_papers=len(o_groups),
+        unique_papers=len(all_groups),
     )
 
 
@@ -503,3 +528,88 @@ def apply_faceted_selection(
         year_end=year_end,
     )
     return tuple(record for record in records if matcher.match(record))
+
+
+#: 共同科目家族規則版本
+COMMON_SUBJECT_VERSION = "common-subjects-v1"
+
+
+@dataclass(frozen=True)
+class CommonSubjectPreset:
+    """共同科目快速查詢預設家族。"""
+
+    key: str
+    label: str
+    server_keyword: str
+    description: str
+
+
+COMMON_SUBJECT_PRESETS: dict[str, CommonSubjectPreset] = {
+    "chinese": CommonSubjectPreset(
+        key="chinese",
+        label="國文（含作文、公文與測驗）",
+        server_keyword="國文",
+        description="涵蓋「國文」、「國文（作文與測驗）」、「國文（作文、公文與測驗）」等，自動排除「外國文」等子字串誤擊。",
+    ),
+    "law_knowledge": CommonSubjectPreset(
+        key="law_knowledge",
+        label="法學知識與英文（含憲法、法學緒論、法學大意）",
+        server_keyword="法學",
+        description="涵蓋「法學知識與英文（包括中華民國憲法、法學緒論、英文）」、「法學知識（包括中華民國憲法、法學緒論）」、「法學大意」等，自動排除專業法規科目。",
+    ),
+    "civics": CommonSubjectPreset(
+        key="civics",
+        label="公民與英文（含初等／五等公民）",
+        server_keyword="公民",
+        description="涵蓋初等考試及五等特考之「公民與英文」、「公民」，自動排除其他含公民字樣的專業科目。",
+    ),
+    "english": CommonSubjectPreset(
+        key="english",
+        label="英文／外國文(英文)（共同科目）",
+        server_keyword="英文",
+        description="涵蓋「英文」、「外國文(英文)」、「憲法與英文」、「中華民國憲法與英文」，自動排除「輪機工程（包括…輪機英文）」等專業科目。",
+    ),
+}
+
+
+def matches_common_subject_preset(subject: str, preset_key: str) -> bool:
+    """判斷科目名稱是否屬於指定的共同科目家族（排除子字串誤擊）。"""
+    if preset_key not in COMMON_SUBJECT_PRESETS:
+        raise ValueError(f"未知的共同科目家族：{preset_key}")
+    key = compact_key(subject)
+    if not key:
+        return False
+    if preset_key == "chinese":
+        return key.startswith("國文")
+    if preset_key == "law_knowledge":
+        return key.startswith("法學知識") or key in (
+            "法學大意",
+            "法學緒論",
+            "憲法與英文",
+            "中華民國憲法與英文",
+            "中華民國憲法",
+        )
+    if preset_key == "civics":
+        return key in ("公民與英文", "公民") or key.startswith("公民與英文(")
+    if preset_key == "english":
+        return (
+            key == "英文"
+            or key.startswith("英文(")
+            or key.startswith("外國文(英文")
+            or key in ("憲法與英文", "中華民國憲法與英文")
+        )
+    return False
+
+
+def common_subject_values(
+    records: tuple[ExamRecord, ...], preset_key: str
+) -> frozenset[str]:
+    """從紀錄集合中挑出符合指定共同科目家族的原始科目顯示值。"""
+    if preset_key not in COMMON_SUBJECT_PRESETS:
+        raise ValueError(f"未知的共同科目家族：{preset_key}")
+    return frozenset(
+        record.subject
+        for record in records
+        if matches_common_subject_preset(record.subject, preset_key)
+    )
+

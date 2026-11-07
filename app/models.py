@@ -20,6 +20,9 @@ ASSET_ENDPOINT = "https://wwwq.moex.gov.tw/exam/wHandExamQandA_File.ashx"
 #: 穩定 ID 策略版本；官方識別碼缺失時的雜湊策略改變時必須遞增
 ID_STRATEGY_VERSION = "moex-v1"
 
+#: 試卷群組鍵規則版本
+PAPER_GROUP_RULE_VERSION = "paper-v1"
+
 
 class QuestionType(str, Enum):
     """題型。預設為 UNKNOWN，不得憑答案連結有無推論純題型。"""
@@ -419,3 +422,19 @@ def build_exam_asset_id(exam_code: str | None, role: str, ordinal: int = 1) -> s
     """產生考試層級附件的穩定 ID。"""
     key = exam_code or stable_hash(role + str(ordinal), 12)
     return f"exam:{key}#{role.lower()}{ordinal}"
+
+
+def paper_group_key(asset: ExamAsset) -> str | None:
+    """同一份試卷的分組鍵；以官方附件 ID 的考試／科目／類型／卷次為準。"""
+    if asset.scope is not AssetScope.SUBJECT or not asset.official_id:
+        return None
+    parts = asset.official_id.split(":")
+    if len(parts) != 5 or parts[0] != "moex":
+        return None
+    _, exam_code, _category_code, subject_code, type_and_seq = parts
+    if not exam_code or not subject_code or not type_and_seq:
+        return None
+    if type_and_seq[0] in ("A", "B"):
+        return None
+    return f"paper:{exam_code}:{subject_code}:{type_and_seq}"
+

@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 
-from app.models import AssetRole, ExamAsset, ExamRecord, QuestionType
+from app.models import AssetRole, ExamAsset, ExamRecord, QuestionType, paper_group_key
 
 #: A／B／C 三種預設模板（SPEC §5）
 DEFAULT_TEMPLATES: dict[str, str] = {
@@ -510,6 +510,44 @@ def _infer_record_type(
     if len(known) == 1:
         return known.pop()
     return QuestionType.UNKNOWN
+
+
+def collapse_shared_paper_paths(
+    plan: PathPlan, records: tuple[ExamRecord, ...]
+) -> PathPlan:
+    """收斂同群組共用試卷的預覽路徑，同一群組只保留第一個 PlannedFile。"""
+    asset_index = {
+        asset.asset_id: asset for record in records for asset in record.assets
+    }
+    seen_groups: set[str] = set()
+    kept_files: list[PlannedFile] = []
+    omitted = 0
+
+    for item in plan.files:
+        asset = asset_index.get(item.asset_id)
+        if asset is not None:
+            group_key = paper_group_key(asset) or f"url:{asset.url}"
+        else:
+            group_key = f"asset:{item.asset_id}"
+
+        if group_key in seen_groups:
+            omitted += 1
+            continue
+        seen_groups.add(group_key)
+        kept_files.append(item)
+
+    warnings = list(plan.warnings)
+    if omitted > 0:
+        warnings.append(
+            f"{omitted} 個附件與其他類科共用同一份試卷，預覽只列實際會建立的檔案"
+        )
+
+    return PathPlan(
+        root=plan.root,
+        template=plan.template,
+        files=tuple(kept_files),
+        warnings=tuple(warnings),
+    )
 
 
 def preview_lines(plan: PathPlan) -> tuple[str, ...]:
