@@ -595,3 +595,53 @@ def test_cleanup_keeps_duplicate_when_tracked_copy_is_missing(
 
     assert removed == ()
     assert duplicate.is_file()
+
+
+def test_share_existing_writes_dedupe_without_network_request(
+    tmp_path, store, sample_pdf
+) -> None:
+    root = tmp_path / "downloads"
+    digest = seed_completed(
+        store, root, asset_id="primary-q1", relative="A/115_試題.pdf", content=sample_pdf
+    )
+    server = Server([])
+    downloader = make_downloader(tmp_path, store, server)
+
+    follower = make_target("follower-q1", "B/115_另一類科_試題.pdf")
+    result = downloader.share_existing(follower, source_asset_id="primary-q1")
+
+    assert result.status is AttachmentStatus.COMPLETED
+    assert result.shared_by_paper is True
+    assert result.dedupe_of == "primary-q1"
+    assert result.relative_path == "A/115_試題.pdf"
+    assert result.sha256 == digest
+    assert server.requests == []
+
+    row = store.get_attachment("follower-q1")
+    assert row is not None
+    assert row.status is AttachmentStatus.COMPLETED
+    assert row.path == "A/115_試題.pdf"
+    assert row.sha256 == digest
+    assert row.dedupe_of == "primary-q1"
+
+
+def test_share_existing_fails_when_source_file_is_missing_or_corrupted(
+    tmp_path, store, sample_pdf
+) -> None:
+    root = tmp_path / "downloads"
+    seed_completed(
+        store, root, asset_id="primary-q1", relative="A/115_試題.pdf", content=sample_pdf
+    )
+    (root / "A/115_試題.pdf").unlink()
+    server = Server([])
+    downloader = make_downloader(tmp_path, store, server)
+
+    follower = make_target("follower-q1", "B/115_另一類科_試題.pdf")
+    result = downloader.share_existing(follower, source_asset_id="primary-q1")
+
+    assert result.status is AttachmentStatus.FAILED
+    assert result.error_code == "shared-source-missing"
+    row = store.get_attachment("follower-q1")
+    assert row is not None
+    assert row.status is AttachmentStatus.FAILED
+    assert row.error_code == "shared-source-missing"

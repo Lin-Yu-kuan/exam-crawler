@@ -55,7 +55,7 @@ class FakeQueryService:
 
 
 class FakeTaskService:
-    api_version = 2
+    api_version = 3
 
     def export_results(self, task_id):
         return ()
@@ -163,7 +163,7 @@ def test_query_rejects_out_of_range_years(html_dir) -> None:
 
 
 def test_query_initialises_all_candidates(html_dir) -> None:
-    controller, _, _ = make_controller(html_dir)
+    controller, query, _ = make_controller(html_dir)
 
     snapshot = controller.query(QuerySpec(113, 113))
 
@@ -274,7 +274,7 @@ def test_stats_difference_snapshot_allows_download(html_dir) -> None:
 
 
 def test_quick_filter_only_affects_visible(html_dir) -> None:
-    controller, _, _ = make_controller(html_dir)
+    controller, query, _ = make_controller(html_dir)
     controller.query(QuerySpec(113, 113))
     controller.quick_text["subjects"] = "法學"
     visible = controller.visible("subjects")
@@ -289,7 +289,7 @@ def test_quick_filter_only_affects_visible(html_dir) -> None:
 
 
 def test_invert_and_clear_visible(html_dir) -> None:
-    controller, _, _ = make_controller(html_dir)
+    controller, query, _ = make_controller(html_dir)
     controller.query(QuerySpec(113, 113))
     controller.quick_text["categories"] = "一般行政"
     visible = controller.visible("categories")
@@ -305,7 +305,7 @@ def test_invert_and_clear_visible(html_dir) -> None:
 
 
 def test_preview_returns_plan(html_dir) -> None:
-    controller, _, _ = make_controller(html_dir)
+    controller, query, _ = make_controller(html_dir)
     controller.query(QuerySpec(113, 113))
     controller.set_selection("exams", ("113年公務人員初等考試",))
     controller.set_selection("categories", ("初等考試_一般行政",))
@@ -319,7 +319,7 @@ def test_preview_returns_plan(html_dir) -> None:
 
 
 def test_preview_with_invalid_template_sets_error(html_dir) -> None:
-    controller, _, _ = make_controller(html_dir)
+    controller, query, _ = make_controller(html_dir)
     controller.query(QuerySpec(113, 113))
 
     plan = controller.preview(PathMode.D, template="{未知}_{題型}.pdf")
@@ -330,7 +330,7 @@ def test_preview_with_invalid_template_sets_error(html_dir) -> None:
 
 def test_preview_fingerprint_tracks_selection_and_mode(html_dir) -> None:
     """選取、年度、歸檔模式或模板任一變動，預覽就必須失效。"""
-    controller, _, _ = make_controller(html_dir)
+    controller, query, _ = make_controller(html_dir)
     controller.query(QuerySpec(113, 113))
     baseline = controller.preview_fingerprint(PathMode.A, None)
 
@@ -373,7 +373,7 @@ def test_cancel_and_retry_delegate(html_dir) -> None:
 
 def test_query_scope_text_includes_keywords(html_dir) -> None:
     """查詢範圍應顯示年度與已套用的類科／科目關鍵字。"""
-    controller, _, _ = make_controller(html_dir)
+    controller, query, _ = make_controller(html_dir)
 
     controller.query(
         QuerySpec(112, 113, category_keyword="一般行政", subject_keyword="國文")
@@ -386,7 +386,7 @@ def test_query_scope_text_includes_keywords(html_dir) -> None:
 
 
 def test_query_scope_text_without_keywords(html_dir) -> None:
-    controller, _, _ = make_controller(html_dir)
+    controller, query, _ = make_controller(html_dir)
     controller.query(QuerySpec(113, 113))
 
     assert controller.query_scope_text() == "年度 113–113"
@@ -412,7 +412,7 @@ def test_controller_reorganize_and_cleanup(html_dir) -> None:
 
 
 def test_add_and_remove_values(html_dir) -> None:
-    controller, _, _ = make_controller(html_dir)
+    controller, query, _ = make_controller(html_dir)
     controller.query(QuerySpec(113, 113))
     controller.set_selection("subjects", ())
 
@@ -425,7 +425,7 @@ def test_add_and_remove_values(html_dir) -> None:
 
 
 def test_candidates_cache_reused_until_selection_changes(html_dir) -> None:
-    controller, _, _ = make_controller(html_dir)
+    controller, query, _ = make_controller(html_dir)
     controller.query(QuerySpec(113, 113))
 
     first = controller.candidates()
@@ -437,7 +437,7 @@ def test_candidates_cache_reused_until_selection_changes(html_dir) -> None:
 
 def test_candidates_prune_selections_that_left_the_pool(html_dir) -> None:
     """取消某考試後，該考試專屬的類科／科目應自動移出選取。"""
-    controller, _, _ = make_controller(html_dir)
+    controller, query, _ = make_controller(html_dir)
     controller.query(QuerySpec(113, 113))
     before = len(controller.state.categories)
     exam = controller.selected_values("exams")[0]
@@ -451,7 +451,7 @@ def test_candidates_prune_selections_that_left_the_pool(html_dir) -> None:
 
 
 def test_query_resets_quick_filter_text(html_dir) -> None:
-    controller, _, _ = make_controller(html_dir)
+    controller, query, _ = make_controller(html_dir)
     controller.query(QuerySpec(113, 113))
     controller.quick_text["subjects"] = "法學"
 
@@ -461,7 +461,7 @@ def test_query_resets_quick_filter_text(html_dir) -> None:
 
 
 def test_selected_values_rejects_unknown_dimension(html_dir) -> None:
-    controller, _, _ = make_controller(html_dir)
+    controller, query, _ = make_controller(html_dir)
     controller.query(QuerySpec(113, 113))
 
     with pytest.raises(ValueError):
@@ -497,7 +497,7 @@ def test_progress_after_restart_returns_none(html_dir) -> None:
 
 def test_deselect_last_item_sets_zero_selection_and_blocks_download(html_dir) -> None:
     """取消最後一個勾選時應變為零選取並禁用下載，而非恢復全選。"""
-    controller, _, _ = make_controller(html_dir)
+    controller, query, _ = make_controller(html_dir)
     controller.query(QuerySpec(113, 113))
 
     # 先只勾選單一科目
@@ -516,7 +516,7 @@ def test_deselect_last_item_sets_zero_selection_and_blocks_download(html_dir) ->
 
 def test_re_query_resets_active_filters(html_dir) -> None:
     """重新查詢成功後，必須清除舊的 active_filters，避免操作另一欄時因殘留條件變成 0 筆。"""
-    controller, _, _ = make_controller(html_dir)
+    controller, query, _ = make_controller(html_dir)
     controller.query(QuerySpec(113, 113))
 
     # 模擬前一次查詢留下的篩選條件
@@ -531,3 +531,107 @@ def test_re_query_resets_active_filters(html_dir) -> None:
     # 此時操作另一欄（例如勾選初等考試），不會被舊科目條件影響而變成 0 筆
     controller.set_dimension_filters("exams", {"113年公務人員初等考試"})
     assert controller.stats().records == 56
+
+
+def test_query_common_subject_filters_exact_subject_family(html_dir) -> None:
+    """共同科目快速查詢：查詢後自動將 subjects 維度收斂為匹配的共同科目家族名稱。"""
+    controller, query, _ = make_controller(html_dir)
+
+    snapshot = controller.query_common_subject(113, 113, "chinese", exam_name_keyword="初等")
+    assert snapshot is not None
+    assert query.calls[-1] == QuerySpec(
+        113, 113, exam_name_keyword="初等", subject_keyword="國文"
+    )
+    assert controller.active_filters["subjects"] is not None
+    assert all(
+        name == "國文" or name.startswith("國文（") or name.startswith("國文(")
+        for name in controller.active_filters["subjects"]
+    )
+    assert "外國文（英文）" not in controller.active_filters["subjects"]
+
+
+def test_query_common_subject_rejects_unknown_preset(html_dir) -> None:
+    controller, query, _ = make_controller(html_dir)
+    assert controller.query_common_subject(113, 113, "unknown_family") is None
+    assert controller.last_error is not None
+    assert "未知共同科目家族" in controller.last_error
+
+
+def test_preview_collapses_shared_paper_paths(html_dir) -> None:
+    from app.engine.filter import FilterState
+    from app.models import AssetRole, AssetScope, ExamAsset, ExamRecord, QuestionType, TypeEvidence
+
+    evidence = TypeEvidence(
+        question_type=QuestionType.UNKNOWN,
+        source="test",
+        reason="測試",
+        rule_version="test-v1",
+    )
+    controller, query, _ = make_controller(html_dir)
+    q1 = ExamAsset(
+        asset_id="r1#q1",
+        official_id="moex:115080:301:0401:Q1",
+        role=AssetRole.QUESTION,
+        original_label="試題",
+        url="https://example.test/exam?code=115080&c=301&s=0401&t=Q&q=1",
+        observed_at="2026-11-07T00:00:00+08:00",
+        source_version=None,
+        evidence=evidence,
+    )
+    q2 = ExamAsset(
+        asset_id="r2#q1",
+        official_id="moex:115080:302:0401:Q1",
+        role=AssetRole.QUESTION,
+        original_label="試題",
+        url="https://example.test/exam?code=115080&c=302&s=0401&t=Q&q=1",
+        observed_at="2026-11-07T00:00:00+08:00",
+        source_version=None,
+        evidence=evidence,
+    )
+    r1 = ExamRecord(
+        record_id="r1",
+        official_id="moex:115080:301:0401",
+        year=115,
+        exam_name="115年高考三級",
+        exam_short_name=None,
+        category="301 一般行政",
+        subject="法學知識與英文",
+        level=None,
+        source_page="test",
+        assets=(q1,),
+        exam_name_key="115年高考三級",
+        category_key="301一般行政",
+        subject_key="法學知識與英文",
+    )
+    r2 = ExamRecord(
+        record_id="r2",
+        official_id="moex:115080:302:0401",
+        year=115,
+        exam_name="115年高考三級",
+        exam_short_name=None,
+        category="302 一般民政",
+        subject="法學知識與英文",
+        level=None,
+        source_page="test",
+        assets=(q2,),
+        exam_name_key="115年高考三級",
+        category_key="302一般民政",
+        subject_key="法學知識與英文",
+    )
+    query.snapshot = QuerySnapshot(
+        snapshot_id="snap-preview",
+        cache_key="key-preview",
+        spec=QuerySpec(115, 115),
+        records=(r1, r2),
+        status=ParseStatus.OK,
+        years=(),
+        acquired_at="2026-11-07T00:00:00+08:00",
+        parser_version="test",
+        source_url="https://example.test",
+    )
+    controller.query(QuerySpec(115, 115))
+
+    plan = controller.preview(mode=PathMode.A)
+    assert plan is not None
+    assert len(plan.files) == 1
+    assert any("共用同一份試卷" in w for w in plan.warnings)

@@ -10,6 +10,7 @@ from typing import Callable, Protocol
 from app.engine.downloader import DownloadResult
 
 from app.engine.filter import (
+    COMMON_SUBJECT_PRESETS,
     apply_faceted_selection,
     build_faceted_candidates,
     Candidate,
@@ -22,6 +23,7 @@ from app.engine.filter import (
     build_candidates,
     can_download,
     clear_visible,
+    common_subject_values,
     freeze_selection,
     invert_visible,
     quick_filter,
@@ -29,7 +31,13 @@ from app.engine.filter import (
     selection_stats,
     sort_records,
 )
-from app.engine.path_builder import PathBuildError, PathMode, PathPlan, build_plan
+from app.engine.path_builder import (
+    PathBuildError,
+    PathMode,
+    PathPlan,
+    build_plan,
+    collapse_shared_paper_paths,
+)
 from app.engine.query_service import QueryCancelled
 from app.engine.task_service import (
     CleanupReport,
@@ -49,8 +57,8 @@ DIMENSION_LABELS = {"exams": "考試", "categories": "類科", "subjects": "科�
 
 #: 控制器對外介面版本；UI 以此判斷 session 內的實例是否過期（熱重載後必須重建）。
 #: 只要新增／修改 AppController 的公開方法就必須 +1。
-CONTROLLER_API_VERSION = 6
-EXPECTED_TASK_SERVICE_API_VERSION = 2
+CONTROLLER_API_VERSION = 7
+EXPECTED_TASK_SERVICE_API_VERSION = 3
 RESTART_REQUIRED_MESSAGE = "程式已更新，請重新啟動應用程式後重新查詢及下載"
 
 
@@ -176,6 +184,33 @@ class AppController:
         self.state = candidates.initial_state(
             year_start=spec.start_year, year_end=spec.end_year
         )
+        return snapshot
+
+    def query_common_subject(
+        self,
+        start_year: int,
+        end_year: int,
+        preset_key: str,
+        *,
+        exam_name_keyword: str = "",
+        force: bool = False,
+        should_cancel: Callable[[], bool] | None = None,
+    ) -> QuerySnapshot | None:
+        """以共同科目家族預設規則查詢，並自動將科目維度篩選為精確家族名稱（排除偽陽性）。"""
+        preset = COMMON_SUBJECT_PRESETS.get(preset_key)
+        if preset is None:
+            self.last_error = f"未知共同科目家族：{preset_key}"
+            return None
+        spec = QuerySpec(
+            start_year,
+            end_year,
+            exam_name_keyword=exam_name_keyword.strip(),
+            subject_keyword=preset.server_keyword,
+        )
+        snapshot = self.query(spec, force=force, should_cancel=should_cancel)
+        if snapshot is not None and snapshot.records:
+            matched = common_subject_values(snapshot.records, preset_key)
+            self.set_dimension_filters("subjects", set(matched))
         return snapshot
 
     def recent_query_specs(self, limit: int = 10) -> tuple[QuerySpec, ...]:
@@ -426,7 +461,8 @@ class AppController:
             self.last_error = "沒有選取任何紀錄，無法預覽路徑"
             return None
         try:
-            return build_plan(self._root, records, mode=mode, template=template)
+            plan = build_plan(self._root, records, mode=mode, template=template)
+            return collapse_shared_paper_paths(plan, records)
         except PathBuildError as exc:
             self.last_error = f"路徑設定錯誤：{exc}"
             return None

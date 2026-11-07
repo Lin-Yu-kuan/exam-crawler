@@ -278,6 +278,99 @@ def test_stats_separate_records_assets_and_unique_urls(records, all_state) -> No
     assert stats.answer_assets == 239
     assert stats.total_files == 610
     assert stats.unique_urls == 610
+    assert stats.question_papers < stats.question_assets
+    assert stats.shared_question_files == stats.question_assets - stats.question_papers
+    assert stats.shared_files == stats.total_files - stats.unique_papers
+
+
+def test_stats_paper_groups_converge_across_categories() -> None:
+    evidence = TypeEvidence(
+        question_type=QuestionType.UNKNOWN,
+        source="test",
+        reason="測試",
+        rule_version="test-v1",
+    )
+    q1 = ExamAsset(
+        asset_id="r1#q1",
+        official_id="moex:115080:301:0401:Q1",
+        role=AssetRole.QUESTION,
+        original_label="試題",
+        url="https://example.test/exam?code=115080&c=301&s=0401&t=Q&q=1",
+        observed_at="2026-11-07T00:00:00+08:00",
+        source_version=None,
+        evidence=evidence,
+    )
+    a1 = ExamAsset(
+        asset_id="r1#s1",
+        official_id="moex:115080:301:0401:S1",
+        role=AssetRole.CHOICE_ANSWER,
+        original_label="答案",
+        url="https://example.test/exam?code=115080&c=301&s=0401&t=S&q=1",
+        observed_at="2026-11-07T00:00:00+08:00",
+        source_version=None,
+        evidence=evidence,
+    )
+    q2 = ExamAsset(
+        asset_id="r2#q1",
+        official_id="moex:115080:302:0401:Q1",
+        role=AssetRole.QUESTION,
+        original_label="試題",
+        url="https://example.test/exam?code=115080&c=302&s=0401&t=Q&q=1",
+        observed_at="2026-11-07T00:00:00+08:00",
+        source_version=None,
+        evidence=evidence,
+    )
+    a2 = ExamAsset(
+        asset_id="r2#s1",
+        official_id="moex:115080:302:0401:S1",
+        role=AssetRole.CHOICE_ANSWER,
+        original_label="答案",
+        url="https://example.test/exam?code=115080&c=302&s=0401&t=S&q=1",
+        observed_at="2026-11-07T00:00:00+08:00",
+        source_version=None,
+        evidence=evidence,
+    )
+    r1 = ExamRecord(
+        record_id="r1",
+        official_id="moex:115080:301:0401",
+        year=115,
+        exam_name="115年高考三級",
+        exam_short_name=None,
+        category="301 一般行政",
+        subject="法學知識與英文",
+        level=None,
+        source_page="test",
+        assets=(q1, a1),
+        exam_name_key="115年高考三級",
+        category_key="301 一般行政",
+        subject_key="法學知識與英文",
+    )
+    r2 = ExamRecord(
+        record_id="r2",
+        official_id="moex:115080:302:0401",
+        year=115,
+        exam_name="115年高考三級",
+        exam_short_name=None,
+        category="302 一般民政",
+        subject="法學知識與英文",
+        level=None,
+        source_page="test",
+        assets=(q2, a2),
+        exam_name_key="115年高考三級",
+        category_key="302 一般民政",
+        subject_key="法學知識與英文",
+    )
+    stats = selection_stats((r1, r2))
+    assert stats.records == 2
+    assert stats.question_assets == 2
+    assert stats.answer_assets == 2
+    assert stats.total_files == 4
+    assert stats.unique_urls == 4
+    assert stats.question_papers == 1
+    assert stats.answer_papers == 1
+    assert stats.unique_papers == 2
+    assert stats.shared_question_files == 1
+    assert stats.shared_files == 2
 
 
 def _make_record(

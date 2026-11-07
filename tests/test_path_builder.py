@@ -19,13 +19,14 @@ from app.engine.path_builder import (
     PathMode,
     TemplateError,
     build_plan,
+    collapse_shared_paper_paths,
     ensure_within_root,
     is_within_root,
     preview_lines,
     sanitize_segment,
     validate_template,
 )
-from app.models import AssetRole, ExamAsset, ExamRecord, QuestionType, TypeEvidence
+from app.models import AssetRole, AssetScope, ExamAsset, ExamRecord, QuestionType, TypeEvidence
 
 RECORD_ID = "moex:113010:501:0101"
 
@@ -455,3 +456,69 @@ def test_middle_truncation_preserves_tail(tmp_path) -> None:
 
     assert filename.endswith("_試題.pdf")
     assert len(filename.encode("utf-8")) <= 200
+
+
+def test_collapse_shared_paper_paths_keeps_first_per_paper_group(tmp_path) -> None:
+    evidence = TypeEvidence(
+        question_type=QuestionType.UNKNOWN,
+        source="test",
+        reason="測試",
+        rule_version="test-v1",
+    )
+    q1 = ExamAsset(
+        asset_id="r1#q1",
+        official_id="moex:115080:301:0401:Q1",
+        role=AssetRole.QUESTION,
+        original_label="試題",
+        url="https://example.test/exam?code=115080&c=301&s=0401&t=Q&q=1",
+        observed_at="2026-11-07T00:00:00+08:00",
+        source_version=None,
+        evidence=evidence,
+    )
+    q2 = ExamAsset(
+        asset_id="r2#q1",
+        official_id="moex:115080:302:0401:Q1",
+        role=AssetRole.QUESTION,
+        original_label="試題",
+        url="https://example.test/exam?code=115080&c=302&s=0401&t=Q&q=1",
+        observed_at="2026-11-07T00:00:00+08:00",
+        source_version=None,
+        evidence=evidence,
+    )
+    r1 = ExamRecord(
+        record_id="r1",
+        official_id="moex:115080:301:0401",
+        year=115,
+        exam_name="115年高考三級",
+        exam_short_name=None,
+        category="301 一般行政",
+        subject="法學知識與英文",
+        level=None,
+        source_page="test",
+        assets=(q1,),
+        exam_name_key="115年高考三級",
+        category_key="301 一般行政",
+        subject_key="法學知識與英文",
+    )
+    r2 = ExamRecord(
+        record_id="r2",
+        official_id="moex:115080:302:0401",
+        year=115,
+        exam_name="115年高考三級",
+        exam_short_name=None,
+        category="302 一般民政",
+        subject="法學知識與英文",
+        level=None,
+        source_page="test",
+        assets=(q2,),
+        exam_name_key="115年高考三級",
+        category_key="302 一般民政",
+        subject_key="法學知識與英文",
+    )
+    raw_plan = build_plan(tmp_path, (r1, r2), mode=PathMode.A)
+    assert len(raw_plan.files) == 2
+
+    collapsed = collapse_shared_paper_paths(raw_plan, (r1, r2))
+    assert len(collapsed.files) == 1
+    assert collapsed.files[0].asset_id == q1.asset_id
+    assert any("1 個附件與其他類科共用同一份試卷" in w for w in collapsed.warnings)

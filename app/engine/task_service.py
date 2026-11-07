@@ -37,6 +37,7 @@ from app.models import (
     QuerySnapshot,
     QuestionType,
     TaskStatus,
+    paper_group_key,
 )
 from app.storage.manifest import ManifestStore
 
@@ -72,6 +73,11 @@ class DownloaderProtocol(Protocol):
         *,
         should_cancel: Callable[[], bool] | None = None,
         force: bool = False,
+    ) -> DownloadResult:
+        ...
+
+    def share_existing(  # pragma: no cover - 介面
+        self, target: DownloadTarget, *, source_asset_id: str
     ) -> DownloadResult:
         ...
 
@@ -117,6 +123,7 @@ class TaskState:
     failures: tuple[tuple[str, str, str], ...] = ()
     unsupported: tuple[tuple[str, str], ...] = ()
     relocated: int = 0
+    group_shared: int = 0
 
     @property
     def done(self) -> int:
@@ -129,8 +136,10 @@ class TaskState:
     @property
     def message(self) -> str:
         if self.status is TaskStatus.COMPLETED:
-            if self.skipped or self.deduped or self.relocated:
+            if self.skipped or self.deduped or self.group_shared or self.relocated:
                 extras: list[str] = []
+                if self.group_shared:
+                    extras.append(f"{self.group_shared} 個同卷共用檔案")
                 if self.deduped:
                     extras.append(f"{self.deduped} 個與既有檔案內容相同（共用檔案）")
                 if self.skipped:
@@ -174,6 +183,19 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
 
 
+@dataclass(frozen=True)
+class _PaperUnit:
+    """同一份試卷群組的派送單位：primary 代表下載，followers 共用代表檔。"""
+
+    group_key: str
+    primary: DownloadTarget
+    followers: tuple[DownloadTarget, ...] = ()
+
+    @property
+    def all_targets(self) -> tuple[DownloadTarget, ...]:
+        return (self.primary, *self.followers)
+
+
 @dataclass
 class _Task:
     """執行期可變狀態；所有存取都在服務的鎖內。"""
@@ -192,6 +214,7 @@ class _Task:
     completed: int = 0
     skipped: int = 0
     deduped: int = 0
+    group_shared: int = 0
     relocated: int = 0
     failed: int = 0
     cancelled: int = 0
@@ -226,6 +249,7 @@ class _Task:
             failures=tuple(self.failures),
             unsupported=tuple(self.unsupported),
             relocated=self.relocated,
+            group_shared=self.group_shared,
         )
 
 
@@ -233,7 +257,7 @@ class TaskService:
     """任務建立、取消與重試；狀態轉移一律在鎖內完成。"""
 
     # 介面或任務記憶體結構不相容時遞增；舊實例須由程序重啟淘汰。
-    api_version = 2
+    api_version = 3
 
     def __init__(
         self,
@@ -342,6 +366,7 @@ class TaskService:
             task.cancel_requested = False
             task.completed = task.skipped = task.failed = task.cancelled = 0
             task.deduped = 0
+            task.group_shared = 0
             task.relocated = 0
             task.failures.clear()
             task.finished_at = None
@@ -590,8 +615,24 @@ class TaskService:
                 state = task.state()
             self._notify(state)
 
+    @staticmethod
+    def _build_units(targets: list[DownloadTarget]) -> list[_PaperUnit]:
+        """依試卷群組鍵（或 URL）將下載目標分組；每組第一個為代表（primary）。"""
+        grouped: dict[str, list[DownloadTarget]] = {}
+        for target in targets:
+            key = paper_group_key(target.asset) or f"url:{target.asset.url}"
+            grouped.setdefault(key, []).append(target)
+        return [
+            _PaperUnit(
+                group_key=key,
+                primary=items[0],
+                followers=tuple(items[1:]),
+            )
+            for key, items in grouped.items()
+        ]
+
     def _dispatch(self, task: _Task) -> None:
-        pending = list(task.targets)
+        units = self._build_units(task.targets)
         index = 0
         with ThreadPoolExecutor(
             max_workers=self._max_workers, thread_name_prefix=f"dl-{task.task_id}"
@@ -600,12 +641,12 @@ class TaskService:
             while True:
                 while (
                     len(inflight) < self._max_workers
-                    and index < len(pending)
+                    and index < len(units)
                     and not task.cancel_requested
                 ):
-                    target = pending[index]
+                    unit = units[index]
                     index += 1
-                    inflight[pool.submit(self._download_one, task, target)] = target
+                    inflight[pool.submit(self._download_unit, task, unit)] = unit
 
                 if not inflight:
                     break
@@ -613,21 +654,101 @@ class TaskService:
                 done, _ = wait(inflight, return_when=FIRST_COMPLETED)
                 for future in done:
                     inflight.pop(future)
-                    result = future.result()
-                    self._record_result(task, result)
+                    results = future.result()
+                    for result in results:
+                        self._record_result(task, result)
 
         if task.cancel_requested:
-            for target in pending[index:]:
-                self._mark_cancelled(task, target, "取消後未派發")
+            for unit in units[index:]:
+                for target in unit.all_targets:
+                    self._mark_cancelled(task, target, "取消後未派發")
+
+    def _download_unit(self, task: _Task, unit: _PaperUnit) -> list[DownloadResult]:
+        if task.cancel_requested:
+            return [
+                self._cancelled_result(task, target, "取消後未派發")
+                for target in unit.all_targets
+            ]
+
+        primary_result = self._download_one(task, unit.primary)
+        results: list[DownloadResult] = [primary_result]
+        if not unit.followers:
+            return results
+
+        if primary_result.status is AttachmentStatus.CANCELLED:
+            for follower in unit.followers:
+                results.append(self._cancelled_result(task, follower, "取消後未派發"))
+            return results
+
+        if not primary_result.is_success:
+            reason = f"同卷代表下載失敗（{primary_result.error_code or 'unknown'}）"
+            for follower in unit.followers:
+                self._store.mark_attachment_started(
+                    asset_id=follower.asset.asset_id,
+                    snapshot_id=task.snapshot_id,
+                    record_id=follower.record.record_id,
+                    url=follower.asset.url,
+                    role=follower.asset.role.value,
+                )
+                self._store.fail_attachment(
+                    asset_id=follower.asset.asset_id,
+                    error_code="paper-source-failed",
+                    error_message=reason,
+                )
+                results.append(
+                    DownloadResult(
+                        asset_id=follower.asset.asset_id,
+                        status=AttachmentStatus.FAILED,
+                        error_code="paper-source-failed",
+                        error_message=reason,
+                    )
+                )
+            return results
+
+        for follower in unit.followers:
+            if task.cancel_requested:
+                results.append(self._cancelled_result(task, follower, "取消後未派發"))
+                continue
+            try:
+                shared_result = self._downloader.share_existing(
+                    follower, source_asset_id=unit.primary.asset.asset_id
+                )
+            except Exception as exc:
+                shared_result = DownloadResult(
+                    asset_id=follower.asset.asset_id,
+                    status=AttachmentStatus.FAILED,
+                    error_code="unexpected-error",
+                    error_message=f"{type(exc).__name__}: {exc}",
+                )
+            results.append(shared_result)
+        return results
+
+    def _cancelled_result(
+        self, task: _Task, target: DownloadTarget, message: str
+    ) -> DownloadResult:
+        self._store.mark_attachment_started(
+            asset_id=target.asset.asset_id,
+            snapshot_id=task.snapshot_id,
+            record_id=target.record.record_id,
+            url=target.asset.url,
+            role=target.asset.role.value,
+        )
+        self._store.fail_attachment(
+            asset_id=target.asset.asset_id,
+            error_code="cancelled",
+            error_message=message,
+            status=AttachmentStatus.CANCELLED,
+        )
+        return DownloadResult(
+            asset_id=target.asset.asset_id,
+            status=AttachmentStatus.CANCELLED,
+            error_code="cancelled",
+            error_message=message,
+        )
 
     def _download_one(self, task: _Task, target: DownloadTarget) -> DownloadResult:
         if task.cancel_requested:
-            return DownloadResult(
-                asset_id=target.asset.asset_id,
-                status=AttachmentStatus.CANCELLED,
-                error_code="cancelled",
-                error_message="取消後未派發",
-            )
+            return self._cancelled_result(task, target, "取消後未派發")
         try:
             return self._downloader.download(
                 target, should_cancel=lambda: task.cancel_requested
@@ -650,7 +771,9 @@ class TaskService:
                     task.relocated += 1
             elif result.status is AttachmentStatus.COMPLETED:
                 task.completed += 1
-                if result.shared:
+                if result.shared_by_paper:
+                    task.group_shared += 1
+                elif result.shared:
                     task.deduped += 1
             elif result.status is AttachmentStatus.CANCELLED:
                 task.cancelled += 1
@@ -659,13 +782,18 @@ class TaskService:
                 task.failures.append(
                     (result.asset_id, result.error_code or "unknown", result.error_message or "")
                 )
+            share_tag = (
+                "（同卷共用檔案）"
+                if result.shared_by_paper
+                else ("（內容相同，共用檔案）" if result.shared else "")
+            )
             task.events.append(
                 TaskEvent(
                     at=_now_iso(),
                     kind=result.status.value,
                     message=(
                         f"{result.status.value}：{result.relative_path or result.error_message or ''}"
-                        f"{'（內容相同，共用檔案）' if result.shared else ''}"
+                        f"{share_tag}"
                         f"{'（已搬移到目前歸檔結構）' if result.relocated else ''}"
                     ),
                     asset_id=result.asset_id,
@@ -675,28 +803,8 @@ class TaskService:
         self._notify(state)
 
     def _mark_cancelled(self, task: _Task, target: DownloadTarget, message: str) -> None:
-        self._store.mark_attachment_started(
-            asset_id=target.asset.asset_id,
-            snapshot_id=task.snapshot_id,
-            record_id=target.record.record_id,
-            url=target.asset.url,
-            role=target.asset.role.value,
-        )
-        self._store.fail_attachment(
-            asset_id=target.asset.asset_id,
-            error_code="cancelled",
-            error_message=message,
-            status=AttachmentStatus.CANCELLED,
-        )
-        self._record_result(
-            task,
-            DownloadResult(
-                asset_id=target.asset.asset_id,
-                status=AttachmentStatus.CANCELLED,
-                error_code="cancelled",
-                error_message=message,
-            ),
-        )
+        result = self._cancelled_result(task, target, message)
+        self._record_result(task, result)
 
     def _finalize(self, task: _Task) -> None:
         task.finished_at = _now_iso()

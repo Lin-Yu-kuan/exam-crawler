@@ -265,3 +265,25 @@
   - 實機（`localhost:8502`）：勾選項與按鈕已換成新文案並帶問號說明；按「開始過濾」→「計算預覽」→ 出現表格、0 例外，摘要「共 5669 個檔案、1262 個資料夾；其中 3566 個題型暫定」
   - `scripts/bench_preview.py`：全量 3,566 筆的 `build_plan` 約 **3.7 秒**（原本按鈕沒有任何進度提示，才會讓人以為「不能用」）
 - **限制**：預覽仍是按鈕觸發（不隨選取自動重算，避免每次叉 chip 都等 3.7 秒）；表格只列前 200 筆
+
+### [x] P2-10 試卷層級估算、下載前去重與共同科目快速查詢模式（2026-11-07 追加需求）
+
+- **需求**：
+  1. 依官方附件 ID（`moex:{考試}:{類科}:{科目}:{t}{q}`）建立試卷群組（`paper:{考試}:{科目}:{t}{q}`），同一份試卷跨類科在下載前即收斂，只發 1 次請求。
+  2. 統計區正確顯示「已選考科 / 試題附件 / 答案附件 / 不重複試題」，明細提示共用份數。
+  3. 保留「一般自由查詢」100% 行為不變，新增「共同科目快速查詢模式」，內建 4 大共同科目家族（國文、法學知識與英文、公民與英文、英文/外國文），自動排除子字串偽陽性（如排除「外國文」或「輪機英文」）。
+  4. 預覽自動收斂跨類科共用路徑（`collapse_shared_paper_paths`），避免檔案數虛增。
+  5. API 版本對齊：`TaskService.api_version = 3`，`AppController.CONTROLLER_API_VERSION = 7`。
+- **交付**：
+  - `app/models.py`：新增 `PAPER_GROUP_RULE_VERSION = "paper-v1"` 與 `paper_group_key(asset)`。
+  - `app/engine/filter.py`：`SelectionStats` 新增 `question_papers` 等欄位；新增共同科目家族預設 `COMMON_SUBJECT_PRESETS` 與匹配函式。
+  - `app/engine/path_builder.py`：新增 `collapse_shared_paper_paths`。
+  - `app/engine/downloader.py`：`Downloader.share_existing`（驗證來源檔完整性、寫入 manifest `dedupe_of`、0 網路請求）。
+  - `app/engine/task_service.py`：`_PaperUnit` 按試卷分組派送、代表下載後跟隨者共用、代表失敗整組標記 `paper-source-failed`。
+  - `app/ui/controller.py`：新增 `query_common_subject`，`preview` 自動收斂試卷路徑。
+  - `app/ui/web_app.py`：支援查詢模式切換、4 指標卡片（含「不重複試題」）、進度列標示「同卷共用」與「內容共用」。
+  - `scripts/probe_paper_sharing.py`：試卷收斂探測腳本。
+  - 文件同步：`docs/source-validation.md`、`SPEC.md`、`AGENT.md`、`TASKS.md`。
+- **驗證**：
+  - `tests/test_paper_groups.py`、`tests/test_filter.py`、`tests/test_downloader.py`、`tests/test_task_service.py`、`tests/test_app_controller.py`、`tests/test_ui_candidates.py`、`tests/test_ui_smoke.py`。
+

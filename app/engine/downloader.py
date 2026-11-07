@@ -112,6 +112,7 @@ class DownloadResult:
     skipped: bool = False
     relocated: bool = False
     dedupe_of: str | None = None
+    shared_by_paper: bool = False
     error_code: str | None = None
     error_message: str | None = None
 
@@ -267,6 +268,71 @@ class Downloader:
                     error_code="io-error",
                     error_message=message,
                 )
+
+    # --- 同卷共用既有檔案 ---------------------------------------------
+    def share_existing(
+        self, target: DownloadTarget, *, source_asset_id: str
+    ) -> DownloadResult:
+        """同卷共用已完成代表附件：驗證來源檔完好後寫入 manifest，不發出網路請求。"""
+        asset = target.asset
+        self._store.mark_attachment_started(
+            asset_id=asset.asset_id,
+            snapshot_id=self._snapshot_id,
+            record_id=target.record.record_id,
+            url=asset.url,
+            role=asset.role.value,
+        )
+        source_row = self._store.get_attachment(source_asset_id)
+        if (
+            source_row is None
+            or source_row.status
+            not in (AttachmentStatus.COMPLETED, AttachmentStatus.SKIPPED)
+            or not source_row.path
+            or source_row.size is None
+            or not source_row.sha256
+            or not self._is_intact(source_row)
+        ):
+            message = "共用來源檔案遺失或雜湊不符，需重新下載"
+            self._store.fail_attachment(
+                asset_id=asset.asset_id,
+                error_code="shared-source-missing",
+                error_message=message,
+            )
+            return DownloadResult(
+                asset_id=asset.asset_id,
+                status=AttachmentStatus.FAILED,
+                error_code="shared-source-missing",
+                error_message=message,
+            )
+
+        self._store.begin_attachment_verify(
+            asset_id=asset.asset_id,
+            path=source_row.path,
+            sha256=source_row.sha256,
+            size=source_row.size,
+            version=source_row.version,
+        )
+        self._store.complete_attachment(
+            asset_id=asset.asset_id,
+            path=source_row.path,
+            sha256=source_row.sha256,
+            size=source_row.size,
+            version=source_row.version,
+            etag=source_row.etag,
+            last_modified=source_row.last_modified,
+            question_type=source_row.question_type,
+            dedupe_of=source_asset_id,
+        )
+        return DownloadResult(
+            asset_id=asset.asset_id,
+            status=AttachmentStatus.COMPLETED,
+            relative_path=source_row.path,
+            size_bytes=source_row.size,
+            sha256=source_row.sha256,
+            version=source_row.version,
+            dedupe_of=source_asset_id,
+            shared_by_paper=True,
+        )
 
     # --- 既有檔案搬移 -------------------------------------------------
     def relocate(

@@ -249,6 +249,10 @@ def synthetic_year_page(year_roc: int, *, subjects: int = 1) -> str:
     for index in range(subjects):
         rows += category_row(exam_code, f"{500 + index}", f"測試_類科{index}")
         rows += subject_row(
-            exam_code, f"{500 + index}", "0101", f"測試科目{index}", with_answer=True
+            exam_code,
+            f"{500 + index}",
+            f"01{index + 1:02d}",
+            f"測試科目{index}",
+            with_answer=True,
         )
     return result_page(rows, f"共 1 考試 {subjects} 類科 {subjects} 科目")

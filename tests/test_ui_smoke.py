@@ -81,11 +81,12 @@ def test_query_form_wording_matches_user_feedback() -> None:
 
 
 def test_download_progress_separates_new_and_skipped() -> None:
-    """重跑時要分得出來「新下載」「共用」與「略過」，不能全部寫成完成。"""
+    """重跑時要分得出來「新下載」「同卷共用」「內容共用」與「略過」，不能全部寫成完成。"""
     source = (ROOT / "app" / "ui" / "web_app.py").read_text(encoding="utf-8")
 
-    assert "新下載 {state.completed - state.deduped}" in source
-    assert "共用 {state.deduped}" in source
+    assert "新下載 {new_downloads}" in source
+    assert "同卷共用 {state.group_shared}" in source
+    assert "內容共用 {state.deduped}" in source
     assert "略過 {max(0, state.skipped - state.relocated)}" in source
     assert "搬移 {state.relocated}" in source
 

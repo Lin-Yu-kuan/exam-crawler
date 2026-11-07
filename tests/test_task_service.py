@@ -55,6 +55,8 @@ class FakeDownloader:
         self.gate = gate
         self.question_types = question_types or {}
         self.calls: list[str] = []
+        self.share_calls: list[tuple[str, str]] = []
+        self.skipped_assets: set[str] = set()
         self.paths: dict[str, str] = {}
         self.shared: dict[str, str] = {}
         self.relocates: list[tuple[str, str]] = []
@@ -110,6 +112,35 @@ class FakeDownloader:
         self.cleanup_calls = list(relative_paths)
         return tuple(relative_paths[:1])
 
+    def share_existing(
+        self, target: DownloadTarget, *, source_asset_id: str
+    ) -> DownloadResult:
+        asset_id = target.asset.asset_id
+        with self._lock:
+            self.share_calls.append((asset_id, source_asset_id))
+        self._start(target)
+        relative = self.paths.get(source_asset_id, target.relative_path)
+        self.paths[asset_id] = relative
+        result = DownloadResult(
+            asset_id=asset_id,
+            status=AttachmentStatus.COMPLETED,
+            relative_path=relative,
+            size_bytes=10,
+            sha256="0" * 64,
+            dedupe_of=source_asset_id,
+            shared_by_paper=True,
+        )
+        if self.store is not None:
+            self.store.complete_attachment(
+                asset_id=asset_id,
+                path=relative,
+                sha256="0" * 64,
+                size=10,
+                version=1,
+                dedupe_of=source_asset_id,
+            )
+        return result
+
     def download(self, target: DownloadTarget, *, should_cancel=None, force: bool = False) -> DownloadResult:
         asset_id = target.asset.asset_id
         with self._lock:
@@ -146,6 +177,17 @@ class FakeDownloader:
                     _inspection(self.question_types.get(asset_id, QuestionType.UNKNOWN))
                 )
             self.paths[asset_id] = relative
+            if asset_id in self.skipped_assets:
+                result = DownloadResult(
+                    asset_id=asset_id,
+                    status=AttachmentStatus.SKIPPED,
+                    relative_path=relative,
+                    size_bytes=10,
+                    sha256="0" * 64,
+                    skipped=True,
+                )
+                self._finish(target, result)
+                return result
             shared_with = self.shared.get(asset_id)
             result = DownloadResult(
                 asset_id=asset_id,
@@ -634,3 +676,160 @@ def test_cleanup_duplicate_untracked_reports_kept(tmp_path, store) -> None:
     assert report.removed == ("dup.pdf",)
     assert report.kept == ("other.pdf",)
     assert downloader.cleanup_calls == ["dup.pdf", "other.pdf"]
+
+
+def _shared_paper_records() -> tuple[ExamRecord, ExamRecord]:
+    evidence = TypeEvidence(
+        question_type=QuestionType.UNKNOWN,
+        source="test",
+        reason="測試",
+        rule_version="test-v1",
+    )
+    q1 = ExamAsset(
+        asset_id="r1#q1",
+        official_id="moex:115080:301:0401:Q1",
+        role=AssetRole.QUESTION,
+        original_label="試題",
+        url="https://example.test/exam?code=115080&c=301&s=0401&t=Q&q=1",
+        observed_at="2026-11-07T00:00:00+08:00",
+        source_version=None,
+        evidence=evidence,
+    )
+    s1 = ExamAsset(
+        asset_id="r1#s1",
+        official_id="moex:115080:301:0401:S1",
+        role=AssetRole.CHOICE_ANSWER,
+        original_label="答案",
+        url="https://example.test/exam?code=115080&c=301&s=0401&t=S&q=1",
+        observed_at="2026-11-07T00:00:00+08:00",
+        source_version=None,
+        evidence=evidence,
+    )
+    q2 = ExamAsset(
+        asset_id="r2#q1",
+        official_id="moex:115080:302:0401:Q1",
+        role=AssetRole.QUESTION,
+        original_label="試題",
+        url="https://example.test/exam?code=115080&c=302&s=0401&t=Q&q=1",
+        observed_at="2026-11-07T00:00:00+08:00",
+        source_version=None,
+        evidence=evidence,
+    )
+    s2 = ExamAsset(
+        asset_id="r2#s1",
+        official_id="moex:115080:302:0401:S1",
+        role=AssetRole.CHOICE_ANSWER,
+        original_label="答案",
+        url="https://example.test/exam?code=115080&c=302&s=0401&t=S&q=1",
+        observed_at="2026-11-07T00:00:00+08:00",
+        source_version=None,
+        evidence=evidence,
+    )
+    r1 = ExamRecord(
+        record_id="r1",
+        official_id="moex:115080:301:0401",
+        year=115,
+        exam_name="115年高考三級",
+        exam_short_name=None,
+        category="301 一般行政",
+        subject="法學知識與英文",
+        level=None,
+        source_page="test",
+        assets=(q1, s1),
+        exam_name_key="115年高考三級",
+        category_key="301 一般行政",
+        subject_key="法學知識與英文",
+    )
+    r2 = ExamRecord(
+        record_id="r2",
+        official_id="moex:115080:302:0401",
+        year=115,
+        exam_name="115年高考三級",
+        exam_short_name=None,
+        category="302 一般民政",
+        subject="法學知識與英文",
+        level=None,
+        source_page="test",
+        assets=(q2, s2),
+        exam_name_key="115年高考三級",
+        category_key="302 一般民政",
+        subject_key="法學知識與英文",
+    )
+    return r1, r2
+
+
+def test_paper_group_downloads_primary_once_and_shares_followers(tmp_path, store) -> None:
+    """2 類科 × (試題+答案) 同試卷群組 -> 只發 2 次下載請求、4 筆 manifest、2 個實體路徑、group_shared=2。"""
+    r1, r2 = _shared_paper_records()
+    snapshot = make_snapshot((r1, r2))
+    frozen = freeze_selection((r1, r2), snapshot_id=snapshot.snapshot_id)
+    downloader = FakeDownloader(store=store)
+    service = make_service(tmp_path, store, downloader)
+
+    state = service.submit(snapshot, frozen)
+    final = service.wait(state.task_id)
+
+    assert final.status is TaskStatus.COMPLETED
+    assert final.total == 4
+    assert final.completed == 4
+    assert final.group_shared == 2
+    assert len(downloader.calls) == 2
+    assert len(downloader.share_calls) == 2
+    assert "同卷共用" in final.message
+
+    exported = service.export_results(state.task_id)
+    assert len(exported) == 4
+    unique_paths = {res.relative_path for res in exported}
+    assert len(unique_paths) == 2
+
+    q2_row = store.get_attachment(r2.assets[0].asset_id)
+    assert q2_row is not None
+    assert q2_row.dedupe_of == r1.assets[0].asset_id
+
+
+def test_paper_group_primary_failure_marks_followers_failed_and_retries(tmp_path, store) -> None:
+    """代表附件失敗時，跟隨者必須標記 paper-source-failed；重試後全組完成。"""
+    r1, r2 = _shared_paper_records()
+    primary_q = r1.assets[0].asset_id
+    follower_q = r2.assets[0].asset_id
+    snapshot = make_snapshot((r1, r2))
+    frozen = freeze_selection((r1, r2), snapshot_id=snapshot.snapshot_id)
+    downloader = FakeDownloader(store=store, failures={primary_q})
+    service = make_service(tmp_path, store, downloader)
+
+    state = service.submit(snapshot, frozen)
+    first = service.wait(state.task_id)
+
+    assert first.status is TaskStatus.PARTIAL
+    assert first.failed == 2
+    failure_codes = {asset_id: code for asset_id, code, _ in first.failures}
+    assert failure_codes[primary_q] == "invalid-pdf"
+    assert failure_codes[follower_q] == "paper-source-failed"
+
+    downloader.failures.clear()
+    service.retry_failed(state.task_id, snapshot=snapshot)
+    second = service.wait(state.task_id)
+    assert second.status is TaskStatus.COMPLETED
+    assert second.failed == 0
+    assert second.completed == 2
+
+
+def test_paper_group_primary_skipped_still_shares_followers_with_zero_network_calls(
+    tmp_path, store
+) -> None:
+    """代表附件已存在而回傳 SKIPPED 時，跟隨者直接共用既有檔案。"""
+    r1, r2 = _shared_paper_records()
+    snapshot = make_snapshot((r1, r2))
+    frozen = freeze_selection((r1, r2), snapshot_id=snapshot.snapshot_id)
+    downloader = FakeDownloader(store=store)
+    downloader.skipped_assets = {r1.assets[0].asset_id, r1.assets[1].asset_id}
+    service = make_service(tmp_path, store, downloader)
+
+    state = service.submit(snapshot, frozen)
+    final = service.wait(state.task_id)
+
+    assert final.status is TaskStatus.COMPLETED
+    assert final.skipped == 2
+    assert final.completed == 2
+    assert final.group_shared == 2
+    assert len(downloader.share_calls) == 2

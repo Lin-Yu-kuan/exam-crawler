@@ -115,6 +115,8 @@ pdf_inspector 只抽取首頁，檢查前 300 字元，不以文字抽取順序�
 
 path_builder 提供路徑計算與安全檢查；downloader 寫入前再次解析實際父目錄並核對根目錄邊界，防範 symlink／junction 逃逸。涵蓋保留名稱、大小寫碰撞、尾端句點、空名稱、超長路徑與清理後同名。不同附件以穩定 ID 消歧，不覆寫。
 
+下載任務支援試卷層級去重（`paper-v1`）：同一群組（`paper:{exam_code}:{subject_code}:{t}{q}`）由代表（primary）單次下載，其餘跟隨者（followers）透過 `downloader.share_existing` 直接共用代表之實體檔案並記錄 `dedupe_of`，達成 0 網路請求；既有 SHA-256 內容去重保留作為跨群組安全網。預覽時透過 `collapse_shared_paper_paths` 收斂共用試卷路徑，避免檔案清單膨脹。
+
 下載先寫同檔案系統內的 `.part`，成功狀態、內容、可比較長度及 PDF 驗證通過後才嗅探與計算最終路徑。原子更名後更新 manifest；啟動核對處理中間崩潰。無效 PDF 記為失敗；有效但無法辨識題型的 PDF 可作 UNKNOWN 歸檔。
 
 SQLite 寫入使用短交易並序列化狀態更新；不在網路等待期間持有交易。不得僅憑非零大小、同名或 URL 相同宣稱完成。略過須比對 manifest、大小與 SHA-256。內容去重只能發生在驗證（狀態、內容、長度、PDF、題型）之後：SHA-256 相同且既有檔完好時共用路徑並寫入 `dedupe_of`，否則不可共用；不得為避免重複而跳過驗證或覆寫既有檔案。

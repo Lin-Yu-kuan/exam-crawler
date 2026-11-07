@@ -30,7 +30,7 @@ from app.ui.controller import AppController
 
 
 class _NoNetwork:
-    api_version = 2
+    api_version = 3
 
     def __getattr__(self, name):  # 任何呼叫都代表越界使用網路
         def _boom(*args, **kwargs):
@@ -98,6 +98,8 @@ def test_metric_row_reflects_initial_selection(candidates_app: AppTest) -> None:
     assert int(metrics["已選考科"]) > 0
     assert "試題附件" in metrics
     assert "答案附件" in metrics
+    assert "不重複試題" in metrics
+    assert int(metrics["不重複試題"]) <= int(metrics["試題附件"])
 
 
 def test_none_button_sets_zero_selection_and_disables_download() -> None:
@@ -252,4 +254,50 @@ web_app._render_query(st.session_state["ctrl"])
     assert ctrl.submitted_spec == QuerySpec(114, 115, subject_keyword="資料結構")
     assert not [w for w in app.warning if "尚未查詢" in w.value]
     assert any("年度 114–115" in m.value for m in app.markdown if "筆紀錄" in m.value)
+
+
+def test_common_subject_query_mode_calls_query_common_subject() -> None:
+    """切換至「共同科目快速查詢」模式並送出時，應呼叫 controller.query_common_subject。"""
+    script = '''
+import streamlit as st
+from app.ui import web_app
+
+class _DummyController:
+    last_error = None
+    snapshot = None
+
+    def __init__(self):
+        self.common_calls = []
+        self.normal_calls = []
+
+    def recent_query_specs(self, limit=10):
+        return ()
+
+    def query(self, spec, force=False):
+        self.normal_calls.append((spec, force))
+
+    def query_common_subject(self, start, end, preset_key, *, exam_name_keyword="", force=False):
+        self.common_calls.append((start, end, preset_key, exam_name_keyword, force))
+
+if "ctrl" not in st.session_state:
+    st.session_state["ctrl"] = _DummyController()
+
+web_app._render_query(st.session_state["ctrl"])
+'''
+    app = AppTest.from_string(script, default_timeout=30)
+    app.run()
+    assert not app.exception
+
+    app.radio(key="q_mode").set_value("共同科目快速查詢").run()
+    assert not app.exception
+
+    app.selectbox(key="q_common_preset").select("law_knowledge").run()
+    assert not app.exception
+
+    app.button[0].click().run()
+    assert not app.exception
+
+    ctrl = app.session_state["ctrl"]
+    assert ctrl.normal_calls == []
+    assert ctrl.common_calls == [(113, 113, "law_knowledge", "", False)]
 

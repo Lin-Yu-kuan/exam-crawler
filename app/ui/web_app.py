@@ -27,6 +27,7 @@ import streamlit as st
 from app.crawler.moex_client import MoexClient
 from app.crawler.rate_limiter import RateLimitConfig, RateLimiter
 from app.engine.downloader import Downloader
+from app.engine.filter import COMMON_SUBJECT_PRESETS
 from app.engine.path_builder import DEFAULT_TEMPLATES, PathMode
 from app.engine.query_service import QueryService
 from app.engine.task_service import DEFAULT_WORKERS, MAX_WORKERS, MIN_WORKERS, TaskService, TaskServiceError
@@ -220,8 +221,8 @@ def build_controller(
     )
 
 
-EXPECTED_CONTROLLER_API_VERSION = 6
-EXPECTED_TASK_SERVICE_API_VERSION = 2
+EXPECTED_CONTROLLER_API_VERSION = 7
+EXPECTED_TASK_SERVICE_API_VERSION = 3
 RESTART_REQUIRED_MESSAGE = "程式已更新，請重新啟動應用程式後重新查詢及下載"
 
 
@@ -461,6 +462,10 @@ def _render_query(controller: AppController) -> None:
         st.session_state["q_subject"] = ""
     if "q_full" not in st.session_state:
         st.session_state["q_full"] = False
+    if "q_mode" not in st.session_state:
+        st.session_state["q_mode"] = "一般自由查詢"
+    if "q_common_preset" not in st.session_state:
+        st.session_state["q_common_preset"] = "chinese"
 
     recent_specs = controller.recent_query_specs()
 
@@ -477,6 +482,7 @@ def _render_query(controller: AppController) -> None:
         if selected_history != "（點選歷史條件自動帶入…）":
             idx = history_options.index(selected_history) - 1
             chosen_spec = recent_specs[idx]
+            st.session_state["q_mode"] = "一般自由查詢"
             st.session_state["q_start"] = chosen_spec.start_year
             st.session_state["q_end"] = chosen_spec.end_year
             st.session_state["q_exam"] = chosen_spec.exam_name_keyword or ""
@@ -486,6 +492,13 @@ def _render_query(controller: AppController) -> None:
             st.session_state.pop(curr_key, None)
             st.session_state["history_ver"] = ver + 1
             st.rerun()
+
+    query_mode = st.radio(
+        "查詢模式",
+        ("一般自由查詢", "共同科目快速查詢"),
+        horizontal=True,
+        key="q_mode",
+    )
 
     col1, col2 = st.columns(2)
     start = col1.number_input(
@@ -500,28 +513,51 @@ def _render_query(controller: AppController) -> None:
         max_value=115,
         key="q_end",
     )
-    col_exam, col_category, col_subject = st.columns(3)
-    exam_keyword = col_exam.text_input(
-        "考試名稱關鍵字（可留空）",
-        key="q_exam",
-    )
-    category_keyword = col_category.text_input(
-        "類科關鍵字（可留空）",
-        key="q_category",
-    )
-    subject_keyword = col_subject.text_input(
-        "科目關鍵字（可留空）",
-        key="q_subject",
-    )
-    full_fetch = st.checkbox(
-        "不套用關鍵字，抓整年度全部考科",
-        key="q_full",
-        help=(
-            "勾選後會忽略上面三個關鍵字，直接向考選部下載整年度資料"
-            "（113 年約 3,566 筆、6 MB、約 11 秒）。候選清單最完整，但比較慢；"
-            "平常建議先用關鍵字縮小範圍。"
-        ),
-    )
+
+    preset_key = "chinese"
+    category_keyword = ""
+    subject_keyword = ""
+    full_fetch = False
+
+    if query_mode == "共同科目快速查詢":
+        col_preset, col_exam = st.columns(2)
+        preset_key = col_preset.selectbox(
+            "共同科目家族",
+            options=list(COMMON_SUBJECT_PRESETS.keys()),
+            format_func=lambda k: COMMON_SUBJECT_PRESETS[k].label,
+            key="q_common_preset",
+        )
+        exam_keyword = col_exam.text_input(
+            "考試名稱關鍵字（可留空）",
+            key="q_exam",
+        )
+        preset_info = COMMON_SUBJECT_PRESETS[preset_key]
+        st.caption(f"💡 {preset_info.description}；下載時同卷跨類科自動只抓 1 次。")
+        subject_keyword = preset_info.server_keyword
+    else:
+        col_exam, col_category, col_subject = st.columns(3)
+        exam_keyword = col_exam.text_input(
+            "考試名稱關鍵字（可留空）",
+            key="q_exam",
+        )
+        category_keyword = col_category.text_input(
+            "類科關鍵字（可留空）",
+            key="q_category",
+        )
+        subject_keyword = col_subject.text_input(
+            "科目關鍵字（可留空）",
+            key="q_subject",
+        )
+        full_fetch = st.checkbox(
+            "不套用關鍵字，抓整年度全部考科",
+            key="q_full",
+            help=(
+                "勾選後會忽略上面三個關鍵字，直接向考選部下載整年度資料"
+                "（113 年約 3,566 筆、6 MB、約 11 秒）。候選清單最完整，但比較慢；"
+                "平常建議先用關鍵字縮小範圍。"
+            ),
+        )
+
     force = st.checkbox(
         "重新向官網下載（忽略今日快取）",
         key="q_force",
@@ -551,7 +587,16 @@ def _render_query(controller: AppController) -> None:
             st.error("；".join(errors))
         elif form_spec is not None:
             with st.spinner("正在取得考畢試題清單…"):
-                controller.query(form_spec, force=force)
+                if query_mode == "共同科目快速查詢":
+                    controller.query_common_subject(
+                        int(start),
+                        int(end),
+                        preset_key,
+                        exam_name_keyword=exam_keyword,
+                        force=force,
+                    )
+                else:
+                    controller.query(form_spec, force=force)
             _reset_candidate_widgets()
             if controller.last_error:
                 st.error(controller.last_error)
@@ -664,14 +709,21 @@ def _reset_candidate_widgets() -> None:
 def _render_task(controller: AppController, auto_refresh: bool, root: str = DEFAULT_ROOT) -> None:
     if controller.snapshot is not None and controller.state is not None:
         stats = controller.stats()
-        cols = st.columns(3)
-        for col, label, value in zip(cols, ("已選考科", "試題附件", "答案附件"),
-                                     (stats.records, stats.question_assets, stats.answer_assets)):
+        cols = st.columns(4)
+        for col, label, value in zip(
+            cols,
+            ("已選考科", "試題附件", "答案附件", "不重複試題"),
+            (stats.records, stats.question_assets, stats.answer_assets, stats.question_papers),
+        ):
             col.metric(label, value, border=True)
         st.caption(f"儲存位置：{cloud_display_root(root)}")
         with st.expander("檔案與傳輸明細"):
-            st.write(f"預計歸檔 {stats.total_files} 個檔案；實際傳輸（去重）{stats.unique_urls} 份。")
-            st.caption("內容相同的附件會共用同一個檔案，實際檔案數可能較少；題型與檔名以下載驗證後為準。")
+            st.write(
+                f"{stats.records} 個考科、{stats.total_files} 個附件 → "
+                f"{stats.question_papers} 份試題、{stats.answer_papers} 份答案；"
+                f"{stats.shared_question_files} 個試題附件與其他類科共用同一份試卷。"
+            )
+            st.caption("內容相同的其他附件仍會以 SHA-256 共用同一個檔案，實際檔案數可能較少；題型與檔名以下載驗證後為準。")
     disabled = not controller.can_download()
     btn_label = "開始加載" if is_cloud_env() else "開始下載"
     clicked = st.button(btn_label, type="primary", disabled=disabled, width="stretch")
@@ -760,8 +812,9 @@ def _render_task(controller: AppController, auto_refresh: bool, root: str = DEFA
     ):
         controller.retry()
         st.rerun()
+    new_downloads = max(0, state.completed - state.group_shared - state.deduped)
     cols[2].caption(
-        f"新下載 {state.completed - state.deduped}／共用 {state.deduped}"
+        f"新下載 {new_downloads}／同卷共用 {state.group_shared}／內容共用 {state.deduped}"
         f"／略過 {max(0, state.skipped - state.relocated)}／搬移 {state.relocated}"
         f"／失敗 {state.failed}／取消 {state.cancelled}"
     )
